@@ -81,6 +81,7 @@ fun AppsTab(model: AppModel) {
         rows = withContext(Dispatchers.IO) { loadRows(context, apps) }
         classifying = false
     }
+    model.settingsVersion
     val excluded = model.excluded()
 
     Column(Modifier.fillMaxSize()) {

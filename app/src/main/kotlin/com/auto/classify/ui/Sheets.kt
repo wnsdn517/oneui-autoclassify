@@ -319,6 +319,7 @@ fun SignalsSheet(model: AppModel, onClose: () -> Unit) {
     WindowBottomSheet(show = true, title = "분류 근거", onDismissRequest = onClose) {
         Column {
             items.forEach { (id, title, summary) ->
+                model.settingsVersion
                 SwitchPreference(
                     checked = id in on,
                     onCheckedChange = { v ->

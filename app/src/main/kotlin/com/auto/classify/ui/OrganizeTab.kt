@@ -304,6 +304,7 @@ fun AiInput(model: AppModel, layout: org.json.JSONObject?) {
 
 @Composable
 private fun PrefSwitch(model: AppModel, key: String, def: Boolean, title: String, summary: String?, enabled: Boolean = true) {
+    model.settingsVersion // redraw when any setting changes (prefs aren't observable)
     SwitchPreference(
         checked = model.prefs.getBoolean(key, def),
         onCheckedChange = { v -> model.edit({ putBoolean(key, v) }) },
