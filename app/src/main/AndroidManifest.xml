@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Only this app (and root) may send commands to the hooked launcher. -->
+    <permission
+        android:name="com.auto.classify.permission.COMMAND"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.auto.classify.permission.COMMAND" />
+
+    <!-- The classifier looks at every installed app's roles, services and icon. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- AI requests with the user's own API key, and update checks on GitHub. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- In-app updates without root go through the system installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.AutoClassify">
+
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="@string/xposed_description" />
+        <meta-data android:name="xposedminversion" android:value="93" />
+        <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
+        <meta-data android:name="xposedsharedprefs" android:value="true" />
+
+        <!-- Called by the hooked launcher; ClassifierProvider checks the caller. -->
+        <provider
+            android:name=".ClassifierProvider"
+            android:authorities="com.auto.classify.classifier"
+            android:exported="true" />
+
+        <receiver
+            android:name=".ui.InstallReceiver"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
