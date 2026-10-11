@@ -45,10 +45,8 @@ public final class AiOptions {
         add(new Opt(Config.KEY_CLEAN_STALE, "맞지 않는 자동 폴더 정리", Kind.BOOL, 0, 0));
         add(new Opt(Config.KEY_SCREEN_OFF_TIDY, "화면 꺼질 때 새 앱 위치 정리", Kind.BOOL, 0, 0));
         add(new Opt(Config.KEY_DETAILED, "세부 카테고리", Kind.BOOL, 0, 0));
-        add(new Opt(Config.KEY_UNCLASSIFIED, "분류 못 한 앱", Kind.CHOICE, 0, 0,
-                Config.UNCLASSIFIED_KEEP, Config.UNCLASSIFIED_FREE, Config.UNCLASSIFIED_FOLDER, Config.UNCLASSIFIED_PAGE));
-        add(new Opt(Config.KEY_UNCLASSIFIED_FOLDER, "분류 못 한 앱 폴더 이름", Kind.TEXT, 0, 0));
-        add(new Opt(Config.KEY_UNCLASSIFIED_PAGE, "분류 못 한 앱 페이지", Kind.INT, 1, 20));
+        // Not the "unclassified apps" settings: they move apps around, and the AI used them (wrongly) to
+        // answer layout requests. Layout goes through folders, page and loose_page instead.
     }
 
     private static void add(Opt o) {
@@ -57,7 +55,8 @@ public final class AiOptions {
 
     /** What the AI is told it may change, appended to its instructions. */
     public static String prompt() {
-        StringBuilder sb = new StringBuilder("OPTIONS (only when the request asks to change a setting; lines like  set:KEY=VALUE ):\n");
+        StringBuilder sb = new StringBuilder("OPTIONS (only when the user explicitly asks to change that setting; never to carry out a "
+                + "layout request such as pages or folders; lines like  set:KEY=VALUE ):\n");
         for (Opt o : OPTS.values()) {
             sb.append("  set:").append(o.key).append('=');
             switch (o.kind) {
@@ -74,7 +73,6 @@ public final class AiOptions {
                     sb.append("text");
             }
             sb.append("   ").append(o.label);
-            if (Config.KEY_UNCLASSIFIED.equals(o.key)) sb.append(" (keep = 그대로, free = 폴더 밖 빈 페이지, folder = 한 폴더에 모음, page = 한 페이지에 모음)");
             sb.append('\n');
         }
         return sb.toString();
