@@ -1,5 +1,8 @@
 package com.auto.classify.ui
 
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -148,6 +151,7 @@ fun RiskBanner(model: AppModel, onClick: () -> Unit) {
 fun DiagnosisHost(model: AppModel, activity: MainActivity) {
     model.settingsVersion
     val d = model.diagnosis ?: return
+    val context = LocalContext.current
     var dismissedSignature by remember { mutableStateOf<String?>(null) }
     val acked = d.signature() == model.prefs.getString(Config.KEY_ACKED_HEALTH, "")
     val show = d.level == Diagnosis.Level.FATAL ||
@@ -173,22 +177,27 @@ fun DiagnosisHost(model: AppModel, activity: MainActivity) {
         Column {
             TextButton("로그 내보내기", { activity.exportLogs() }, Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
-            when (d.level) {
-                Diagnosis.Level.FATAL -> TextButton("종료", { activity.finishAndRemoveTask() }, Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.textButtonColorsPrimary())
-                Diagnosis.Level.ERROR -> TextButton("무시 (해당 기능 끄기)", {
-                    val off = model.disabledFeatures().apply { addAll(d.brokenFeatures) }
-                    model.edit({
-                        putString(Config.KEY_DISABLED, off.joinToString(","))
-                        putString(Config.KEY_ACKED_HEALTH, d.signature())
-                    })
-                    close()
-                    model.requestHealth()
-                }, Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColorsPrimary())
-                else -> TextButton("닫기", {
-                    if (d.level != Diagnosis.Level.OK) model.edit({ putString(Config.KEY_ACKED_HEALTH, d.signature()) }, reload = false)
-                    close()
-                }, Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColorsPrimary())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (Updater.hasUpdate(context)) {
+                    TextButton("업데이트", { Updater.install(context) }, Modifier.weight(1f))
+                }
+                when (d.level) {
+                    Diagnosis.Level.FATAL -> TextButton("종료", { activity.finishAndRemoveTask() }, Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColorsPrimary())
+                    Diagnosis.Level.ERROR -> TextButton("무시 (해당 기능 끄기)", {
+                        val off = model.disabledFeatures().apply { addAll(d.brokenFeatures) }
+                        model.edit({
+                            putString(Config.KEY_DISABLED, off.joinToString(","))
+                            putString(Config.KEY_ACKED_HEALTH, d.signature())
+                        })
+                        close()
+                        model.requestHealth()
+                    }, Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+                    else -> TextButton("닫기", {
+                        if (d.level != Diagnosis.Level.OK) model.edit({ putString(Config.KEY_ACKED_HEALTH, d.signature()) }, reload = false)
+                        close()
+                    }, Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
+                }
             }
             if (model.showDiagnosis && model.disabledFeatures().isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
