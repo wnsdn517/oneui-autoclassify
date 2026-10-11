@@ -326,6 +326,24 @@ class AppModel(private val context: Context) {
 
     // ---- AI organize -----------------------------------------------------------------------
 
+    /** Past AI replies and summaries, newest first; [aiAnswer] is the latest one for the current screen. */
+    var aiHistory by mutableStateOf(AiHistory.load(prefs))
+        private set
+    var aiAnswer by mutableStateOf<String?>(null)
+        private set
+
+    private fun remember(request: String, text: String) {
+        if (text.isBlank()) return
+        aiAnswer = text
+        aiHistory = AiHistory.add(prefs, AiHistory.Entry(System.currentTimeMillis(), request.trim(), text.trim()))
+    }
+
+    fun clearAiHistory() {
+        AiHistory.clear(prefs)
+        aiHistory = emptyList()
+        aiAnswer = null
+    }
+
     var aiRunning by mutableStateOf(false)
         private set
     var aiError by mutableStateOf<String?>(null)
@@ -347,7 +365,7 @@ class AppModel(private val context: Context) {
             return
         }
         edit({ putString(Config.KEY_AI_REQUEST, instruction) }, reload = false)
-        runAi {
+        runAi(instruction) {
                 com.auto.classify.ai.AiOrganizer.organize(context, llm, instruction,
                     prefs.getBoolean(Config.KEY_AI_VERIFY, false), prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
         }
@@ -367,7 +385,7 @@ class AppModel(private val context: Context) {
         val pages = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_PAGES, ""))
             .mapNotNull { (k, v) -> v.toIntOrNull()?.let { k to it } }.toMap()
         appendOnSuccess = request.trim()
-        runAi {
+        runAi(request) {
             com.auto.classify.ai.AiOrganizer.refine(context, llm, instruction, assign, pages, request,
                 prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
         }
@@ -400,22 +418,34 @@ class AppModel(private val context: Context) {
         aiError = null
         aiStage = "규칙 만드는 중"
         aiFolders = emptyList()
-        Thread {
+        background {
             val r = runCatching { com.auto.classify.ai.RuleAssistant.run(context, llm, text, folders) }
             main.post {
                 aiRunning = false
                 r.onSuccess { res ->
-                    if (res.rules.isBlank()) {
+                    if (res.rules.isBlank() && res.options.isEmpty() && res.answer.isNotBlank()) {
+                        remember(text, res.answer)
+                        return@onSuccess
+                    }
+                    if (res.rules.isBlank() && res.options.isEmpty()) {
                         aiError = "알아듣지 못했어요" + res.unsupported.firstOrNull()?.let { " · $it" }.orEmpty()
                         return@onSuccess
                     }
                     val old = prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
-                    edit({ putString(Config.KEY_RULES, mergeRules(res.rules, old)) })
-                    toast("규칙 ${res.rules.lines().count { it.isNotBlank() && !it.startsWith("#") }}개 추가")
+                    var changed = emptyList<String>()
+                    edit({
+                        if (res.rules.isNotBlank()) putString(Config.KEY_RULES, mergeRules(res.rules, old))
+                        changed = com.auto.classify.ai.AiOptions.apply(prefs, this, res.options)
+                    })
+                    val added = res.rules.lines().count { it.isNotBlank() && !it.startsWith("#") }
+                    toast(listOfNotNull(if (added > 0) "규칙 ${added}개 추가" else null, optionsNotice(changed)).joinToString("\n"))
+                    remember(text, listOf(res.answer, if (added > 0) "규칙 ${added}개 추가" else "", changed.joinToString("\n") { "설정 변경: $it" },
+                        res.unsupported.joinToString("\n"))
+                        .filter { it.isNotBlank() }.joinToString("\n"))
                     request("plan")
                 }.onFailure { aiError = "AI 실패: ${it.message}" }
             }
-        }.start()
+        }
     }
 
     /**
@@ -448,7 +478,7 @@ class AppModel(private val context: Context) {
         aiError = null
         aiStage = com.auto.classify.ai.AiOrganizer.STAGE_SEND
         aiFolders = emptyList()
-        Thread {
+        background {
             val r = runCatching { com.auto.classify.ai.AiOrganizer.nameFolders(context, llm, folders, style, progress()) }
             main.post {
                 aiRunning = false
@@ -462,7 +492,7 @@ class AppModel(private val context: Context) {
                     request("plan")
                 }.onFailure { aiError = "AI 실패: ${it.message}" }
             }
-        }.start()
+        }
     }
 
     /** Keeps new folder names (old -> new) in whatever decides those folders. */
@@ -497,35 +527,91 @@ class AppModel(private val context: Context) {
         })
     }
 
+    /** What to tell the user when the AI changed settings on request; null when it changed none. */
+    private fun optionsNotice(changes: List<String>): String? =
+        if (changes.isEmpty()) null else "AI가 요청대로 설정을 바꿨어요\n" + changes.joinToString("\n") { "• $it" }
+
+    /** Runs an AI job on a worker thread inside a foreground service, so it survives the app closing. */
+    private fun background(work: () -> Unit) {
+        com.auto.classify.ui.AiService.begin(context)
+        Thread {
+            try {
+                work()
+            } finally {
+                com.auto.classify.ui.AiService.end(context)
+            }
+        }.start()
+    }
+
+    /** Restores settings from a backup file's text, then tells the launcher to reload them. */
+    fun importSettings(json: String): Int {
+        val n = SettingsBackup.import(context, json)
+        edit({})
+        requestHealth()
+        return n
+    }
+
     /** A follow-up request joins the instruction only once the AI has handled it. */
     private var appendOnSuccess: String? = null
 
     /** The user's AI service; retries show up as the current stage. */
     private fun aiLlm() = com.auto.classify.ai.ApiLlm.fromPrefs(context)?.also { llm ->
+        aiSearch = null
+        aiWeb = llm.web
         llm.onRetry = java.util.function.Consumer { n -> main.post { aiStage = "다시 시도 중 ($n)" } }
+        llm.onSearch = java.util.function.Consumer { q ->
+            main.post {
+                aiSearch = q
+                aiStage = "웹 검색: $q"
+            }
+        }
+    }
+
+    /** Web search queries the model ran for this request, and whether it may search at all. */
+    private var aiSearch: String? = null
+    private var aiWeb = false
+
+    /** What the streamed answer so far says the AI is doing, from how far its JSON has come. */
+    private fun streamStage(kind: String, text: String): String {
+        val verify = kind == com.auto.classify.ai.AiUsage.KIND_VERIFY
+        val prefix = if (verify) "검토 · " else ""
+        return when {
+            text.isEmpty() -> prefix + if (aiWeb) "검색하며 생각하는 중" else "AI가 생각하는 중"
+            text.contains("\"note\"") -> prefix + "요약 쓰는 중"
+            text.contains("\"options\"") || text.contains("\"settings\"") -> prefix + "설정 확인 중"
+            text.contains("\"loose\"") -> prefix + "폴더 밖 앱 정리 중"
+            else -> {
+                val n = FOLDER_NAME.findAll(text).map { it.groupValues[1] }.distinct().count()
+                prefix + if (n == 0) "폴더 구성 시작" else "폴더 구성 중 (${n}개)"
+            }
+        }
     }
 
     private fun progress() = com.auto.classify.ai.AiOrganizer.Progress { stage, text ->
         val names = if (text.isEmpty()) null else FOLDER_NAME.findAll(text).map { it.groupValues[1] }.distinct().toList()
         main.post {
-            aiStage = when (stage) {
-                com.auto.classify.ai.AiUsage.KIND_VERIFY -> "검토하는 중"
-                com.auto.classify.ai.AiUsage.KIND_ORGANIZE -> "폴더 짜는 중"
-                com.auto.classify.ai.AiUsage.KIND_NAMES -> "이름 짓는 중"
-                com.auto.classify.ai.AiOrganizer.STAGE_SEND -> "AI가 생각하는 중"
+            val base = when (stage) {
+                com.auto.classify.ai.AiUsage.KIND_VERIFY, com.auto.classify.ai.AiUsage.KIND_ORGANIZE -> streamStage(stage, text)
+                com.auto.classify.ai.AiUsage.KIND_NAMES -> if (text.isEmpty()) "이름 고민하는 중" else "이름 짓는 중 (${names?.size ?: 0}개)"
+                com.auto.classify.ai.AiOrganizer.STAGE_SEND -> streamStage(com.auto.classify.ai.AiUsage.KIND_ORGANIZE, "")
+                com.auto.classify.ai.AiOrganizer.STAGE_LIST -> "앱 목록 읽는 중"
+                com.auto.classify.ai.AiOrganizer.STAGE_CATEGORY -> "앱 분류 중"
+                com.auto.classify.ai.AiOrganizer.STAGE_DEV -> "앱 만든 곳 확인 중"
                 else -> stage
             }
+            aiStage = aiSearch?.let { "$base · 웹 검색함: $it" } ?: base
             if (names != null) aiFolders = names
         }
     }
 
     /** Runs an AI organize step off the main thread, then saves its answer and opens the preview. */
-    private fun runAi(work: () -> com.auto.classify.ai.AiOrganizer.Plan) {
+    private fun runAi(asked: String, work: () -> com.auto.classify.ai.AiOrganizer.Plan) {
         aiRunning = true
         aiError = null
+        aiAnswer = null
         aiStage = com.auto.classify.ai.AiOrganizer.STAGE_LIST
         aiFolders = emptyList()
-        Thread {
+        background {
             val r = runCatching(work)
             main.post {
                 aiRunning = false
@@ -536,22 +622,32 @@ class AppModel(private val context: Context) {
                         val ins = prefs.getString(Config.KEY_AI_REQUEST, "")!!
                         edit({ putString(Config.KEY_AI_REQUEST, (ins.trim() + "\n" + append).trim()) }, reload = false)
                     }
+                    if (plan.assign.isEmpty()) {
+                        // Only a reply (a question): nothing to reorganize.
+                        remember(asked, plan.answer)
+                        return@onSuccess
+                    }
                     setMode(Config.MODE_AI)
                     var rules = prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
                     for (line in plan.settings) {
                         val key = line.removePrefix("!").trim().substringBefore(' ')
                         rules = setDirective(rules, key, line.removePrefix("!").trim().substringAfter(' ').trim())
                     }
+                    var changed = emptyList<String>()
                     edit({
+                        changed = com.auto.classify.ai.AiOptions.apply(prefs, this, plan.options)
                         putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(plan.assign))
                         putString(Config.KEY_AI_NOTE, plan.note)
                         putString(Config.KEY_AI_PAGES, org.json.JSONObject(plan.pages as Map<*, *>).toString())
                         putString(Config.KEY_RULES, rules)
                     })
+                    optionsNotice(changed)?.let { toast(it) }
+                    remember(asked, listOf(plan.answer, plan.note, changed.joinToString("\n") { "설정 변경: $it" })
+                        .filter { it.isNotBlank() }.joinToString("\n"))
                     request("plan")
                 }.onFailure { aiError = "AI 실패: ${it.message}" }
             }
-        }.start()
+        }
     }
 
     companion object {

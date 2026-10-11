@@ -11,6 +11,10 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <!-- AI requests with the user's own API key, and update checks on GitHub. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Keeps a running AI request alive when the app is closed. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- In-app updates without root go through the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -30,6 +34,11 @@
             android:name=".ClassifierProvider"
             android:authorities="com.auto.classify.classifier"
             android:exported="true" />
+
+        <service
+            android:name=".ui.AiService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".ui.InstallReceiver"

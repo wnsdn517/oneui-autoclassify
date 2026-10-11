@@ -34,6 +34,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -70,6 +71,13 @@ fun SettingsTab(model: AppModel, activity: MainActivity) {
         item { Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) { AiConnection(model) } }
         item { SmallTitle("AI 사용 기록") }
         item { Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) { AiUsageCard() } }
+        item { SmallTitle("백업 및 불러오기") }
+        item {
+            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                ArrowPreference("설정 내보내기", summary = "규칙·AI 선택·옵션을 파일로 저장 (API 키 제외)", onClick = { activity.exportSettings() })
+                ArrowPreference("설정 불러오기", summary = "내보낸 파일에서 되돌리기", onClick = { activity.importSettings() })
+            }
+        }
         item { SmallTitle("업데이트") }
         item { Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) { UpdateCard() } }
         item { SmallTitle("문제 해결") }
@@ -90,16 +98,25 @@ private fun AiConnection(model: AppModel) {
     val context = LocalContext.current
     val sp = remember { ApiLlm.prefs(context) }
     var provider by remember { mutableStateOf(sp.getString(ApiLlm.KEY_PROVIDER, ApiLlm.GEMINI)!!) }
-    var key by remember { mutableStateOf(sp.getString(ApiLlm.KEY_KEY, "")!!) }
-    var modelName by remember { mutableStateOf(sp.getString(ApiLlm.KEY_MODEL, "")!!) }
+    var modelName by remember {
+        mutableStateOf(sp.getString(ApiLlm.KEY_MODEL, "")!!.ifBlank { if (provider == ApiLlm.GEMINI) ApiLlm.DEFAULT_GEMINI else "" })
+    }
     var base by remember { mutableStateOf(sp.getString(ApiLlm.KEY_BASE, OPENAI_PRESETS[0].second)!!) }
+    /** Which service the key belongs to: Gemini, a preset's address, or a custom one. */
+    fun slot(): String = when {
+        provider == ApiLlm.GEMINI -> "gemini"
+        OPENAI_PRESETS.dropLast(1).any { it.second == base } -> base
+        else -> "custom"
+    }
+    var key by remember { mutableStateOf(ApiLlm.keyFor(sp, sp.getString(ApiLlm.KEY_SLOT, slot())!!)) }
     var models by remember { mutableStateOf<List<String>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     fun save() {
-        sp.edit().putString(ApiLlm.KEY_PROVIDER, provider).putString(ApiLlm.KEY_KEY, key.trim())
+        sp.edit().putString(ApiLlm.KEY_PROVIDER, provider).putString(ApiLlm.KEY_SLOT, slot())
+            .putString(ApiLlm.KEY_PREFIX + slot(), key.trim()).remove(ApiLlm.KEY_KEY)
             .putString(ApiLlm.KEY_MODEL, modelName.trim()).putString(ApiLlm.KEY_BASE, base.trim()).apply()
         model.edit({}, reload = false) // re-read "AI connected" elsewhere
     }
@@ -116,7 +133,7 @@ private fun AiConnection(model: AppModel) {
             loading = false
             r.onSuccess { list ->
                 models = list
-                if (modelName !in list) {
+                if (modelName !in list && !(provider == ApiLlm.GEMINI && modelName == ApiLlm.DEFAULT_GEMINI)) {
                     val best = if (provider == ApiLlm.GEMINI) ApiLlm.bestModel(list) else list.firstOrNull()
                     if (best != null) {
                         if (modelName.isNotBlank()) message = "'$modelName' 모델은 없어서 $best 로 바꿨어요"
@@ -133,9 +150,11 @@ private fun AiConnection(model: AppModel) {
 
     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
         SegTabs(listOf("Google AI Studio", "OpenAI 호환"), if (provider == ApiLlm.GEMINI) 0 else 1, {
+            save() // the current service keeps its own key
             provider = if (it == 0) ApiLlm.GEMINI else ApiLlm.OPENAI
-            modelName = ""
+            modelName = if (provider == ApiLlm.GEMINI) ApiLlm.DEFAULT_GEMINI else ""
             models = emptyList()
+            key = ApiLlm.keyFor(sp, slot())
             save()
             loadModels()
         })
@@ -158,8 +177,10 @@ private fun AiConnection(model: AppModel) {
             summary = base.ifBlank { "주소를 입력하세요" },
             onSelectedIndexChange = {
                 val pr = OPENAI_PRESETS[it]
+                save()
                 base = pr.second
                 modelName = pr.third
+                key = ApiLlm.keyFor(sp, slot())
                 save()
                 loadModels()
             },
@@ -184,6 +205,19 @@ private fun AiConnection(model: AppModel) {
         )
     } else {
         ArrowPreference("모델", summary = modelName.ifBlank { "키를 넣으면 목록을 불러와요" }, onClick = { loadModels() })
+    }
+    if (ApiLlm.supportsWeb(provider, base)) {
+        var web by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_WEB, false)) }
+        SwitchPreference(
+            title = "웹 검색 허용",
+            summary = "모르는 앱을 검색해서 분류해요 (요청이 느려지고 토큰·요금이 더 들 수 있어요)",
+            checked = web,
+            onCheckedChange = { web = it; sp.edit().putBoolean(ApiLlm.KEY_WEB, it).apply() },
+        )
+    } else {
+        Text("이 서비스는 웹 검색을 지원하지 않아요 (Gemini, OpenRouter만)",
+            Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
     TextButton(
         if (loading) "확인하는 중…" else "연결 확인",

@@ -36,6 +36,10 @@ public final class RuleAssistant {
         /** Parts of the request the AI said it can't do. */
         public final java.util.List<String> unsupported;
         public final String raw;
+        /** The reply when the request was a question rather than something to organize. */
+        public String answer = "";
+        /** App settings the request asked to change ("min_apps=3"), already validated. */
+        public final java.util.List<String> options = new ArrayList<>();
 
         public Result(String rules, int dropped, java.util.List<String> unsupported, String raw) {
             this.rules = rules;
@@ -68,6 +72,9 @@ public final class RuleAssistant {
                     + "  !폴더색 아이콘|카테고리|기본|그대로   color folders by their apps' icons, by category, or reset\n"
                     + "FOLDER COLOR for one folder: FOLDER#COLOR, COLOR = 빨강 주황 노랑 초록 청록 파랑 보라 분홍 회색 흰색 검정 기본 or RRGGBB,\n"
                     + "  e.g. 놀이#빨강@2|cat:게임\n\n"
+                    + "If the user asks a question or wants an explanation instead, write one line  say:<short Korean answer>  "
+                    + "(you may also write rules in the same answer).\n"
+                    + AiOptions.prompt() + "\n"
                     + "If part of the request cannot be expressed with the above (for example moving apps to the home\n"
                     + "screen, hiding or uninstalling apps, changing app icons, or widgets), write one line\n"
                     + "for it exactly like:  # \"<that part of the request>\"은(는) 처리할 수 없습니다\n"
@@ -121,7 +128,12 @@ public final class RuleAssistant {
         Result r = clean(raw);
         if (llm instanceof ApiLlm) AiUsage.record(context, AiUsage.KIND_RULES, "규칙 " + r.rules.split("\n").length + "줄",
                 true, ((ApiLlm) llm).lastIn, ((ApiLlm) llm).lastOut);
-        if (r.rules.isEmpty() && !draft.rules.isEmpty()) return new Result(draft.rules, r.dropped, draft.unsupported, raw);
+        if (r.rules.isEmpty() && !draft.rules.isEmpty()) {
+            Result d = new Result(draft.rules, r.dropped, draft.unsupported, raw);
+            d.options.addAll(r.options);
+            d.answer = r.answer;
+            return d;
+        }
         return r;
     }
 
@@ -139,12 +151,24 @@ public final class RuleAssistant {
         StringBuilder ok = new StringBuilder();
         java.util.List<String> unsupported = new ArrayList<>();
         int dropped = 0;
+        java.util.List<String> options = new ArrayList<>();
+        StringBuilder answer = new StringBuilder();
         // Thinking models write their reasoning first.
         raw = raw.replaceAll("(?s)<think>.*?</think>", "").replaceAll("(?s)^.*</think>", "");
         for (String line : raw.replace("```", "").split("\n")) {
             String l = line.trim();
             if (l.startsWith("- ") || l.startsWith("* ") && l.length() > 2 && l.charAt(2) != '|') l = l.substring(2).trim();
             if (l.isEmpty()) continue;
+            if (l.startsWith("say:")) {
+                if (answer.length() > 0) answer.append(' ');
+                answer.append(l.substring(4).trim());
+                continue;
+            }
+            if (l.startsWith("set:")) {
+                String n = AiOptions.normalize(l);
+                if (n != null) options.add(n);
+                continue;
+            }
             if (l.startsWith("#")) {
                 if (l.contains("처리할 수 없")) {
                     unsupported.add(l.substring(1).trim());
@@ -159,7 +183,10 @@ public final class RuleAssistant {
             }
             ok.append(l).append('\n');
         }
-        return new Result(ok.toString().trim(), dropped, unsupported, raw);
+        Result res = new Result(ok.toString().trim(), dropped, unsupported, raw);
+        res.options.addAll(options);
+        res.answer = answer.toString();
+        return res;
     }
 
     /** Categories, the user's folders and every app with its automatic category. */

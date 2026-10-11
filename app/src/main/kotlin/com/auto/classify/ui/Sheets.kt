@@ -873,3 +873,31 @@ private fun RuleDialog(
         }
     }
 }
+
+/** The AI's latest reply or summary, and the earlier ones on demand. */
+@Composable
+fun AiReply(model: AppModel) {
+    if (model.aiRunning) return
+    var open by remember { mutableStateOf(false) }
+    model.aiAnswer?.let {
+        Text(it, Modifier.fillMaxWidth().padding(top = 8.dp), style = MiuixTheme.textStyles.body2)
+    }
+    val past = model.aiHistory
+    if (past.isEmpty()) return
+    Text(
+        if (open) "이전 결과 접기" else "이전 결과 ${past.size}개 보기",
+        Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 8.dp),
+        color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.body2,
+    )
+    if (open) {
+        val fmt = remember { java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.KOREA) }
+        for (e in past) {
+            Text(fmt.format(java.util.Date(e.time)) + (if (e.request.isBlank()) "" else " · " + e.request.take(60)),
+                Modifier.padding(top = 8.dp), style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            Text(e.text, Modifier.fillMaxWidth(), style = MiuixTheme.textStyles.body2)
+        }
+        Text("기록 지우기", Modifier.fillMaxWidth().clickable { model.clearAiHistory() }.padding(vertical = 8.dp),
+            color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.body2)
+    }
+}

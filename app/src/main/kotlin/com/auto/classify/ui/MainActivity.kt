@@ -37,9 +37,35 @@ class MainActivity : ComponentActivity() {
             .onFailure { model.toast("로그 저장 실패: ${it.message}") }
     }
 
+    private val saveSettings = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) return@registerForActivityResult
+        runCatching {
+            contentResolver.openOutputStream(uri)!!.use { it.write(SettingsBackup.export(this).toByteArray()) }
+        }.onSuccess { model.toast("설정을 내보냈어요 (API 키는 제외)") }
+            .onFailure { model.toast("내보내기 실패: ${it.message}") }
+    }
+
+    private val loadSettings = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        runCatching {
+            val text = contentResolver.openInputStream(uri)!!.use { it.readBytes().toString(Charsets.UTF_8) }
+            model.importSettings(text)
+        }.onSuccess { model.toast("설정 ${it}개를 불러왔어요") }
+            .onFailure { model.toast("불러오기 실패: ${it.message}") }
+    }
+
+    fun exportSettings() =
+        saveSettings.launch("autoclassify-settings-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date()) + ".json")
+
+    fun importSettings() = loadSettings.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // The AI notification only shows with this; the AI job runs either way.
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         model = AppModel(this)
         ThemeChoice.mode = model.prefs.getString(ThemeChoice.KEY, "system")!!
         setContent { AppTheme { MainScreen(model, this) } }

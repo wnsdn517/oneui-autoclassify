@@ -18,6 +18,9 @@ import top.yukonga.miuix.kmp.icon.extended.Send
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.unit.dp
 import com.auto.classify.ai.ApiLlm
 import com.auto.classify.core.Config
@@ -213,6 +216,12 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
     }
 }
 
+/**
+ * Longest instruction: it travels with the app list in every request, and Gemini takes about
+ * 1M tokens, so this leaves ample room while keeping requests fast.
+ */
+private const val INSTRUCTION_MAX = 20_000
+
 /** AI mode: the instruction and one button. Follow-ups happen in the preview it opens. */
 @Composable
 private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Unit) {
@@ -247,12 +256,26 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
             )
         }
         model.aiError?.let { ErrorText(it) }
+        AiReply(model)
     }
     if (editing) {
         var draft by remember { mutableStateOf(instruction) }
         top.yukonga.miuix.kmp.window.WindowDialog(show = true, title = "어떻게 정리할까요?", onDismissRequest = { editing = false }) {
             androidx.compose.foundation.layout.Column {
-                TextField(value = draft, onValueChange = { draft = it }, minLines = 5, modifier = Modifier.fillMaxWidth())
+                // The field scrolls inside a bounded area, so the buttons below never get pushed off screen.
+                val maxHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.4f).dp
+                androidx.compose.foundation.layout.Column(
+                    Modifier.heightIn(max = maxHeight).verticalScroll(rememberScrollState()),
+                ) {
+                    TextField(
+                        value = draft,
+                        onValueChange = { if (it.length <= INSTRUCTION_MAX) draft = it },
+                        minLines = 5,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Text("${draft.length} / $INSTRUCTION_MAX", Modifier.padding(top = 4.dp), style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 SheetActions("취소", { editing = false }, "저장", {
                     instruction = draft.trim()
                     model.edit({ putString(Config.KEY_AI_REQUEST, instruction) }, reload = false)

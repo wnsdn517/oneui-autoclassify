@@ -317,6 +317,7 @@ fun PreviewSheet(model: AppModel, plan: JSONObject) {
                             AiInput(model, after)
                         }
                         model.aiError?.let { ErrorText(it) }
+                        AiReply(model)
                     }
                     if (editor.dirty) {
                         Text(

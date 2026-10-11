@@ -37,6 +37,10 @@ public final class AiOrganizer {
         public final Map<String, Integer> pages = new LinkedHashMap<>();
         /** Layout directive lines ("!폴더안정렬 색상") the instruction asked for. */
         public final List<String> settings = new ArrayList<>();
+        /** App settings the request asked to change ("min_apps=3"), already validated. */
+        public final List<String> options = new ArrayList<>();
+        /** The AI reply when the user asked a question or wanted an explanation. */
+        public String answer = "";
         public String note = "";
         public int tokens;
     }
@@ -44,7 +48,7 @@ public final class AiOrganizer {
     private static final String RULES_OF_THE_ANSWER =
             "Answer with one JSON object only:\n"
                     + "{\"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
-                    + "\"loose_page\":0, \"settings\":[setting lines], \"note\":\"짧은 한국어 요약\"}\n"
+                    + "\"loose_page\":0, \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"answer\":\"\", \"note\":\"짧은 한국어 요약\"}\n"
                     + "- page: 0 = anywhere. When the user asks to split things across pages or put folders/apps on a page, "
                     + "set page (1 = first page) on those folders, and loose_page for the loose apps.\n"
                     + "- Every app number appears exactly once, in one folder or in loose.\n"
@@ -59,7 +63,12 @@ public final class AiOrganizer {
                     + "  !앱정렬 이름|색상|설치일       (order of apps outside folders)\n"
                     + "  !폴더정렬 이름|색상|앱수       (order of folders)\n"
                     + "  !배치 폴더먼저|앱먼저\n"
-                    + "  !폴더색 아이콘|카테고리|기본\n";
+                    + "  !폴더색 아이콘|카테고리|기본\n"
+                    + "- answer: when the user asks a question or wants an explanation (\"왜 이렇게 했어?\", \"이 앱은 뭐야?\"), "
+                    + "answer it here in Korean, short and concrete; folders may then stay as they are. Otherwise leave it empty.\n"
+                    + "- note: one or two Korean sentences saying what you did, or why you changed nothing.\n"
+                    + "- options: only when the user asks to change an app setting (not the layout). KEY=VALUE pairs from:\n"
+                    + AiOptions.prompt().replace("set:", "  ");
 
     private static final String SYSTEM_ORGANIZE =
             "You organize the apps screen (app drawer) of a Samsung Galaxy phone into folders, exactly as the user asks.\n"
@@ -262,7 +271,7 @@ public final class AiOrganizer {
             AiUsage.record(context, AiUsage.KIND_ORGANIZE, "실패: " + e.getMessage(), false, llm.lastIn, llm.lastOut);
             throw e;
         }
-        if (!verify) return plan;
+        if (!verify || plan.assign.isEmpty()) return plan;
         String proposal = describe(plan, a);
         try {
             Plan checked = parse(llm.generate(SYSTEM_VERIFY, header + "\n\nProposed organization:\n" + proposal, true,
@@ -274,6 +283,7 @@ public final class AiOrganizer {
             }
             AiUsage.record(context, AiUsage.KIND_VERIFY, "앱 " + changed + "개 고침", true, llm.lastIn, llm.lastOut);
             if (checked.assign.size() < plan.assign.size() * 0.9) return plan; // a truncated answer: keep the first
+            if (checked.answer.isEmpty()) checked.answer = plan.answer;
             checked.note = (checked.note.isEmpty() ? plan.note : checked.note) + (changed > 0 ? " (검증에서 " + changed + "개 고침)" : " (검증 통과)");
             return checked;
         } catch (Exception e) {
@@ -373,8 +383,14 @@ public final class AiOrganizer {
             String line = settings.optString(i).trim();
             if (line.startsWith("!") && Directives.validateLine(line) == null) p.settings.add(line);
         }
+        JSONArray options = o.optJSONArray("options");
+        for (int i = 0; options != null && i < options.length(); i++) {
+            String n = AiOptions.normalize(options.optString(i));
+            if (n != null) p.options.add(n);
+        }
+        p.answer = o.optString("answer").trim();
         p.note = o.optString("note");
-        if (p.assign.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
+        if (p.assign.isEmpty() && p.answer.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
         return p;
     }
 
