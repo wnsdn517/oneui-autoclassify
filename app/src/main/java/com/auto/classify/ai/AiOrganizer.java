@@ -47,11 +47,13 @@ public final class AiOrganizer {
 
     private static final String RULES_OF_THE_ANSWER =
             "Answer with one JSON object only:\n"
-                    + "{\"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
-                    + "\"loose_page\":0, \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"answer\":\"\", \"note\":\"짧은 한국어 요약\"}\n"
+                    + "{\"answer\":\"\", \"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
+                    + "\"loose_page\":0, \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"note\":\"짧은 한국어 요약\"}\n"
                     + "- page: 0 = anywhere. When the user asks to split things across pages or put folders/apps on a page, "
                     + "set page (1 = first page) on those folders, and loose_page for the loose apps.\n"
-                    + "- Every app number appears exactly once, in one folder or in loose.\n"
+                    + "- Every app number appears exactly once, in one folder or in loose. The one exception: when the request needs no folder "
+                    + "change at all (a question, an explanation, a settings change), return \"folders\":[] and \"loose\":[]; "
+                    + "the current organization then stays exactly as it is. Never rearrange folders the request didn't ask about.\n"
                     + "- Follow the user's instruction first. Where it says nothing, group by what the app is for.\n"
                     + "- Folder names: short Korean (or the brand, e.g. 삼성, Google), as the user wrote them when given.\n"
                     + "- \"too few\" / \"too many\" apps in a folder: unless the user gives numbers, merge folders with fewer than MIN apps "
@@ -86,7 +88,7 @@ public final class AiOrganizer {
                     + "Apply the user's follow-up request to the current organization. Change only what the request is about "
                     + "(moving apps, merging or splitting folders, renaming folders, pages, order); keep every other app, "
                     + "folder name and page exactly as it is. If the user asks to start over, organize everything again.\n"
-                    + "Return the full organization in the same format.\n"
+                    + "Return the full organization in the same format, or empty folders and loose when nothing should change.\n"
                     + RULES_OF_THE_ANSWER;
 
     private static final String SYSTEM_NAMES =
@@ -390,7 +392,7 @@ public final class AiOrganizer {
         }
         p.answer = o.optString("answer").trim();
         p.note = o.optString("note");
-        if (p.assign.isEmpty() && p.answer.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
+        if (p.assign.isEmpty() && p.answer.isEmpty() && p.options.isEmpty() && p.settings.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
         return p;
     }
 

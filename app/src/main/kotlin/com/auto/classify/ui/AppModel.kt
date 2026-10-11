@@ -577,6 +577,8 @@ class AppModel(private val context: Context) {
         val prefix = if (verify) "검토 · " else ""
         return when {
             text.isEmpty() -> prefix + if (aiWeb) "검색하며 생각하는 중" else "AI가 생각하는 중"
+            !text.contains("\"folders\"") -> prefix + "답변 쓰는 중"
+            Regex("\"folders\"\\s*:\\s*\\[\\s*\\]").containsMatchIn(text) -> prefix + "폴더는 그대로 두는 중"
             text.contains("\"note\"") -> prefix + "요약 쓰는 중"
             text.contains("\"options\"") || text.contains("\"settings\"") -> prefix + "설정 확인 중"
             text.contains("\"loose\"") -> prefix + "폴더 밖 앱 정리 중"

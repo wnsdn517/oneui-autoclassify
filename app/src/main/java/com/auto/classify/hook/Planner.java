@@ -819,8 +819,9 @@ final class Planner {
 
     /**
      * Refills pages in order to cols*rows items each; adds or drops page groups as needed.
-     * Folders pinned to a page by a rule get that page to themselves; everything else fills the
-     * remaining pages in its current order. Pages that would end up empty are skipped.
+     * Folders pinned to a page by a rule are placed on that page first; everything else fills the
+     * pages in its current order, including what is left of a pinned page once the pages before
+     * it are full. Pages that would end up empty are skipped.
      */
     private void reflowPages(Map<String, Integer> pins, Map<String, Integer> loosePins) {
         int capacity = Math.max(1, cols * rows);
@@ -840,7 +841,13 @@ final class Planner {
             List<Row> mine = pinned.get(p);
             if (mine != null) {
                 for (int i = 0; i < mine.size(); i += capacity) {
-                    layout.add(new ArrayList<>(mine.subList(i, Math.min(mine.size(), i + capacity))));
+                    List<Row> chunk = new ArrayList<>(mine.subList(i, Math.min(mine.size(), i + capacity)));
+                    // Room left on a pinned page goes to the items that would otherwise spill past it
+                    // (earlier pages are already full by now), so no page is left nearly empty.
+                    if (i + capacity >= mine.size()) {
+                        while (chunk.size() < capacity && next < loose.size()) chunk.add(loose.get(next++));
+                    }
+                    layout.add(chunk);
                 }
             } else if (next < loose.size()) {
                 int end = Math.min(loose.size(), next + capacity);
