@@ -14,6 +14,7 @@ import android.os.UserHandle;
 import android.util.Log;
 
 import com.auto.classify.core.Config;
+import com.auto.classify.core.ModuleStatus;
 import com.auto.classify.hook.Diag;
 import com.auto.classify.hook.Engine;
 
@@ -22,6 +23,7 @@ import java.util.List;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -47,6 +49,14 @@ public class ModuleMain implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
+        if (Config.MODULE_PKG.equals(lpparam.packageName)) {
+            try {
+                XposedHelpers.findAndHookMethod(ModuleStatus.class, "isHooked", XC_MethodReplacement.returnConstant(true));
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": 상태 표시 연결 실패: " + t);
+            }
+            return;
+        }
         if (!Config.LAUNCHER_PKG.equals(lpparam.packageName)
                 || !lpparam.packageName.equals(lpparam.processName)) return;
         ClassLoader cl = lpparam.classLoader;

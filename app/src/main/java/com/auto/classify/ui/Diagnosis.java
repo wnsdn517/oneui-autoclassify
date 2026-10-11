@@ -36,7 +36,7 @@ public final class Diagnosis {
         d.level = Level.FATAL;
         d.messages.add(moduleActive
                 ? "One UI 홈이 응답하지 않습니다. LSPosed에서 One UI 홈이 스코프에 체크돼 있는지 확인하고 홈을 다시 시작하세요."
-                : "LSPosed에서 AutoClassify 모듈이 꺼져 있습니다.");
+                : "One UI 홈이 응답하지 않고 모듈이 적용된 흔적이 없습니다. LSPosed에서 AutoClassify를 켜고 스코프에 One UI 홈을 체크한 뒤 홈을 다시 시작하세요.");
         return d;
     }
 

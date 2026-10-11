@@ -186,6 +186,18 @@ public final class Engine {
     // ---- commands -----------------------------------------------------------------------
 
     public void command(String cmd, String arg) {
+        try {
+            dispatch(cmd, arg);
+        } catch (Throwable t) {
+            Diag.failed(Diag.F_CORE, "명령 '" + cmd + "'", t);
+            try {
+                report("'" + cmd + "' 처리 중 오류: " + t);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void dispatch(String cmd, String arg) {
         switch (cmd) {
             case "reload":
                 reload();

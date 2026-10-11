@@ -21,15 +21,4 @@ public final class Prefs {
             return context.getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE);
         }
     }
-
-    /** True when LSPosed accepted the world-readable mode, i.e. the module is active. */
-    @SuppressWarnings("deprecation")
-    public static boolean moduleActive(Context context) {
-        try {
-            context.getSharedPreferences(Config.PREFS, Context.MODE_WORLD_READABLE);
-            return true;
-        } catch (SecurityException e) {
-            return false;
-        }
-    }
 }

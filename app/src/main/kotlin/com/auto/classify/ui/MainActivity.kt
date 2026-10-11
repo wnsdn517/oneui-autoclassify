@@ -117,13 +117,15 @@ class MainActivity : ComponentActivity() {
                     append("AutoClassify ").append(packageManager.getPackageInfo(packageName, 0).versionName).append('\n')
                     append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
                     append(" · Android ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n")
-                    append("모듈 활성: ").append(if (model.moduleActive) "예" else "아니오").append('\n')
+                    append("모듈 활성: ").append(if (com.auto.classify.core.ModuleStatus.isHooked()) "예 (자체 연결)" else if (model.moduleActive) "홈 응답으로 확인" else "확인 안 됨").append('\n')
+                    append("홈 설치: ").append(runCatching { packageManager.getPackageInfo(com.auto.classify.core.Config.LAUNCHER_PKG, 0).versionName }.getOrDefault("없음")).append('\n')
                     val off = model.disabledFeatures()
                     if (off.isNotEmpty()) append("꺼진 기능: ").append(off.joinToString(", ")).append('\n')
                     if (d != null) {
                         append("진단: ").append(d.level).append('\n')
                         d.messages.forEach { append("  ").append(it).append('\n') }
                     }
+                    append("\n--- 설정 앱 기록 ---\n").append(model.eventTrail()).append('\n')
                     append("\n--- One UI 홈 기록 ---\n")
                 }
                 runOnUiThread {

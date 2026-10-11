@@ -13,7 +13,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.auto.classify.core.Classifier
 import com.auto.classify.core.Config
+import com.auto.classify.core.ModuleStatus
 import com.auto.classify.core.Prefs
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.flow.MutableSharedFlow
 import org.json.JSONArray
 import org.json.JSONObject
@@ -104,7 +108,23 @@ class AppModel(private val context: Context) {
             putBoolean(RULES_SPLIT, true)
         }.commit()
     }
-    val moduleActive: Boolean = Prefs.moduleActive(context)
+    /** The launcher answered a request, so the module is certainly running there. */
+    private var launcherReplied by mutableStateOf(false)
+
+    /** Loaded into its own app by LSPosed (needs the module in its own scope), or proven by a reply. */
+    val moduleActive: Boolean get() = ModuleStatus.isHooked() || launcherReplied
+
+    private val events = ArrayDeque<String>()
+
+    /** App-side event trail, exported with the launcher log so a silent launcher is still debuggable. */
+    fun note(msg: String) {
+        synchronized(events) {
+            events.addLast(SimpleDateFormat("HH:mm:ss.SSS", Locale.ROOT).format(Date()) + " " + msg)
+            while (events.size > 100) events.removeFirst()
+        }
+    }
+
+    fun eventTrail(): String = synchronized(events) { events.joinToString("\n") }
     private val main = Handler(Looper.getMainLooper())
 
     /** Bumped on every settings write so composables re-read prefs. */
@@ -153,6 +173,8 @@ class AppModel(private val context: Context) {
                 }
                 Config.ACTION_HEALTH -> {
                     healthTimeout?.let { main.removeCallbacks(it) }
+                    launcherReplied = true
+                    note("health 응답 수신")
                     diagnosis = Diagnosis.from(payload, disabledFeatures())
                 }
                 Config.ACTION_LAYOUT -> folders = folderTitles(payload)
@@ -201,6 +223,7 @@ class AppModel(private val context: Context) {
         busy = true
         val timeout = Runnable {
             busy = false
+            note("요청 '$cmd' 응답 없음")
             messages.tryEmit("One UI 홈이 응답하지 않아요. 앱스 화면을 한 번 열어 주세요.")
             requestHealth()
         }
@@ -217,7 +240,10 @@ class AppModel(private val context: Context) {
 
     fun requestHealth() {
         healthTimeout?.let { main.removeCallbacks(it) }
-        val t = Runnable { diagnosis = Diagnosis.noReply(moduleActive) }
+        val t = Runnable {
+            note("health 응답 없음 (모듈 자체 연결=${ModuleStatus.isHooked()}, 홈 응답 이력=$launcherReplied)")
+            diagnosis = Diagnosis.noReply(ModuleStatus.isHooked())
+        }
         healthTimeout = t
         main.postDelayed(t, 3500)
         send("health")
@@ -233,6 +259,7 @@ class AppModel(private val context: Context) {
     fun requestLogs(done: (String?) -> Unit) {
         logsCallback = done
         val t = Runnable {
+            note("logs 응답 없음")
             logsCallback = null
             done(null)
         }
