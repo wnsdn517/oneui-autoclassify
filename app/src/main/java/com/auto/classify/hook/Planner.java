@@ -158,6 +158,8 @@ final class Planner {
     private final File dbFile;
     private int cols = 4;
     private int rows = 6;
+    /** Live {cols, rows} of the apps screen; read on every load so grid changes are picked up. */
+    private java.util.function.Supplier<int[]> gridSource;
 
     // Model loaded by load()
     private int applistId = -1;
@@ -177,6 +179,10 @@ final class Planner {
     Planner(Context context) {
         this.context = context;
         this.dbFile = context.getDatabasePath("OneUI.db");
+    }
+
+    void setGridSource(java.util.function.Supplier<int[]> source) {
+        this.gridSource = source;
     }
 
     /** Grid of the apps screen as reported by the launcher; used to refill pages. */
@@ -400,6 +406,8 @@ final class Planner {
     }
 
     private void load(SQLiteDatabase db) {
+        int[] grid = gridSource == null ? null : gridSource.get();
+        if (grid != null) setGrid(grid[0], grid[1]);
         pages.clear();
         top.clear();
         children.clear();

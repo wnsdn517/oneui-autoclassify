@@ -80,7 +80,7 @@ public final class Engine {
     private final Planner planner;
 
     private Settings settings = new Settings();
-    private LauncherBridge bridge;
+    private volatile LauncherBridge bridge;
     private Object dataSource;
 
     public Engine(Context context, ClassLoader cl, Supplier<Settings> settingsLoader) {
@@ -111,21 +111,8 @@ public final class Engine {
         } catch (Throwable t) {
             Diag.check("db.schema", Diag.F_ORGANIZE, false, Diag.ERROR, "배치 DB를 열 수 없습니다: " + t);
         }
-        new Thread(() -> {
-            try {
-                Bundle b = context.getContentResolver().call(Uri.parse(GRID_URI), "get_apps_cell_dimension", null, null);
-                int cols = b == null ? 0 : b.getInt("cols"), rows = b == null ? 0 : b.getInt("rows");
-                if (cols > 0 && rows > 0) {
-                    planner.setGrid(cols, rows);
-                    Diag.ok("grid", Diag.F_ORGANIZE);
-                    log("앱스 화면 격자 " + cols + "x" + rows);
-                } else {
-                    Diag.check("grid", Diag.F_ORGANIZE, false, Diag.WARN, "앱스 화면 격자 크기를 몰라 4x6으로 가정");
-                }
-            } catch (Throwable t) {
-                Diag.check("grid", Diag.F_ORGANIZE, false, Diag.WARN, "앱스 화면 격자 크기를 몰라 4x6으로 가정: " + t);
-            }
-        }, "AutoClassify-grid").start();
+        planner.setGridSource(this::grid);
+        new Thread(this::checkGrid, "AutoClassify-grid").start();
         File probe = new File(context.getFilesDir(), "autoclassify_backup");
         if ((probe.isDirectory() || probe.mkdirs()) && probe.canWrite()
                 && context.getDatabasePath("OneUI.db").canRead()) {
@@ -133,6 +120,40 @@ public final class Engine {
         } else {
             Diag.check("backup.fs", Diag.F_BACKUP, false, Diag.ERROR, "백업 폴더에 쓸 수 없거나 DB를 읽을 수 없습니다");
         }
+    }
+
+    /** Reads the grid once and reports it in the self-check. */
+    private void checkGrid() {
+        int[] g = grid();
+        if (g != null) {
+            planner.setGrid(g[0], g[1]);
+            Diag.ok("grid", Diag.F_ORGANIZE);
+            log("앱스 화면 격자 " + g[0] + "x" + g[1]);
+        } else {
+            Diag.check("grid", Diag.F_ORGANIZE, false, Diag.WARN, "앱스 화면 격자 크기를 아직 못 읽음 (앱스 화면이 준비되면 다시 읽음)");
+        }
+    }
+
+    /**
+     * The apps-screen grid {cols, rows} in use right now: from the live view model, else from
+     * the launcher's settings provider. null when neither answers.
+     */
+    private int[] grid() {
+        LauncherBridge b = bridge;
+        if (b != null) {
+            try {
+                int[] g = b.applistGrid();
+                if (g != null) return g;
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Bundle r = context.getContentResolver().call(Uri.parse(GRID_URI), "get_apps_cell_dimension", null, null);
+            int cols = r == null ? 0 : r.getInt("cols"), rows = r == null ? 0 : r.getInt("rows");
+            if (cols > 0 && rows > 0) return new int[]{cols, rows};
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     private String launcherVersion() {
@@ -150,6 +171,7 @@ public final class Engine {
     public void attach(Object applistVm, Object honeyDataSource) {
         this.dataSource = honeyDataSource;
         this.bridge = new LauncherBridge(cl, applistVm, honeyDataSource);
+        new Thread(this::checkGrid, "AutoClassify-grid").start();
     }
 
     private void reload() {
@@ -633,7 +655,15 @@ public final class Engine {
                 ComponentName cn = bridge.component(app);
                 if (cn != null) tracker.beginOwnChange(cn.getPackageName());
             }
-            if (!bridge.createFolder(new ArrayList<>(apps))) {
+            // The launcher puts the folder where the last listed app was, and a new install sits
+            // at the very end of the apps screen. List the earliest-placed app last so the
+            // folder takes its slot instead of jumping to the end.
+            List<Object> ordered = new ArrayList<>(apps);
+            Map<Object, Long> pos = new HashMap<>();
+            for (Object app : ordered) pos.put(app, bridge.position(app));
+            ordered.sort((a, b) -> Long.compare(pos.get(a), pos.get(b)));
+            ordered.add(ordered.remove(0));
+            if (!bridge.createFolder(ordered)) {
                 log("'" + name + "' 폴더 만들기 거부됨");
                 return;
             }

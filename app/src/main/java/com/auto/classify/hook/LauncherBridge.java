@@ -29,6 +29,7 @@ final class LauncherBridge {
     private static final String CREATE_FOLDER = "com.honeyspace.sdk.source.entity.CreateFolderData";
     private static final String SHARED_DATA = "com.honeyspace.sdk.HoneySharedData";
     private static final String SHARED_DATA_KT = "com.honeyspace.sdk.HoneySharedDataKt";
+    private static final String PREFERENCE_DATA_SOURCE = "com.honeyspace.sdk.source.PreferenceDataSource";
 
     private final ClassLoader cl;
     private final Object vm;
@@ -68,6 +69,31 @@ final class LauncherBridge {
         found.setAccessible(true);
         found.invoke(vm, itemId, anchorId, before);
         return true;
+    }
+
+    /**
+     * The apps-screen grid {cols, rows} the launcher is using now, read from the view model's
+     * PreferenceDataSource (getApplistCellX/Y, the same values the screen lays out with).
+     * @return null when it can't be read
+     */
+    int[] applistGrid() {
+        Class<?> prefsCls = XposedHelpers.findClassIfExists(PREFERENCE_DATA_SOURCE, cl);
+        if (prefsCls == null) return null;
+        for (Field f : vm.getClass().getDeclaredFields()) {
+            if (!prefsCls.isAssignableFrom(f.getType())) continue;
+            try {
+                f.setAccessible(true);
+                Object prefs = f.get(vm);
+                if (prefs == null) continue;
+                Object x = XposedHelpers.callMethod(XposedHelpers.callMethod(prefs, "getApplistCellX"), "getValue");
+                Object y = XposedHelpers.callMethod(XposedHelpers.callMethod(prefs, "getApplistCellY"), "getValue");
+                if (x instanceof Integer && y instanceof Integer && (int) x > 0 && (int) y > 0) {
+                    return new int[]{(int) x, (int) y};
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
     }
 
     /** Top-level entries of the apps screen (apps and folders, not folder children). */
@@ -126,6 +152,20 @@ final class LauncherBridge {
         return data == null ? null : (String) XposedHelpers.callMethod(data, "getTitle");
     }
 
+    /** Sort key of a top-level item's place on the apps screen (page, then slot); MAX when unknown. */
+    long position(Object item) {
+        try {
+            Object data = XposedHelpers.callMethod(dataSource, "getHoneyData", id(item));
+            if (data == null) return Long.MAX_VALUE;
+            Object page = XposedHelpers.callMethod(dataSource, "getHoneyGroupData",
+                    (int) XposedHelpers.callMethod(data, "getContainerId"));
+            int pageRank = page == null ? Integer.MAX_VALUE / 2 : (int) XposedHelpers.callMethod(page, "getRank");
+            return ((long) pageRank << 32) | ((int) XposedHelpers.callMethod(data, "getRank") & 0xFFFFFFFFL);
+        } catch (Throwable t) {
+            return Long.MAX_VALUE;
+        }
+    }
+
     Object findTopLevelApp(String pkg) {
         for (Object item : topLevelItems()) {
             if (!isApp(item)) continue;
@@ -152,7 +192,10 @@ final class LauncherBridge {
         return emit("AddFolderItem", ctor.newInstance(keys, id(folder), folder, false, true));
     }
 
-    /** Creates a new apps-screen folder from top-level AppItems ("CreateApplistFolder"). */
+    /**
+     * Creates a new apps-screen folder from top-level AppItems ("CreateApplistFolder").
+     * The launcher puts the folder where the LAST item of the list was.
+     */
     boolean createFolder(List<Object> appItems) throws Exception {
         Constructor<?> ctor = XposedHelpers.findConstructorExact(CREATE_FOLDER, cl,
                 List.class, int.class, List.class);
