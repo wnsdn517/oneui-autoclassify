@@ -964,6 +964,7 @@ final class Planner {
         v.put("type", "page");
         v.put("container_id", applistId);
         v.put("rank", pages.indexOf(id));
+        fillRequired(db, "item_group", v);
         db.insertOrThrow("item_group", null, v);
     }
 
@@ -997,7 +998,31 @@ final class Planner {
         v.put("container_type", 0);
         v.put("container_id", f.containerId);
         v.put("rank", 0);
+        fillRequired(db, "item", v);
         db.insertOrThrow("item", null, v);
+    }
+
+    /**
+     * Keeps inserts valid across launcher versions: drops values for columns the table no longer
+     * has and fills NOT NULL columns without a default that this code doesn't know about (a newer
+     * launcher may add some, e.g. homeup_extend_data).
+     */
+    private static void fillRequired(SQLiteDatabase db, String table, ContentValues v) {
+        Set<String> have = new HashSet<>();
+        try (Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (c.moveToNext()) {
+                String col = c.getString(1);
+                have.add(col);
+                boolean required = c.getInt(3) == 1 && c.isNull(4) && c.getInt(5) == 0;
+                if (!required || v.containsKey(col)) continue;
+                String type = c.getString(2).toUpperCase(Locale.ROOT);
+                if (type.contains("INT")) v.put(col, 0);
+                else if (type.contains("REAL") || type.contains("FLOA") || type.contains("DOUB")) v.put(col, 0.0);
+                else if (type.contains("BLOB")) v.put(col, new byte[0]);
+                else v.put(col, "{}");
+            }
+        }
+        for (String key : new ArrayList<>(v.keySet())) if (!have.contains(key)) v.remove(key);
     }
 
     /** All columns of one row as ContentValues (empty when the row doesn't exist). */

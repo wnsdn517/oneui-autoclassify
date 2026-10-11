@@ -17,7 +17,7 @@
 
 ## 요구 사항
 
-- Android 15+ (One UI 7+), One UI 홈
+- Android 15+ (One UI 7+), One UI 홈 (18.0.07.59까지 구조 확인)
 - 루팅 + LSPosed (적용 범위: One UI 홈)
 
 ## 설치
