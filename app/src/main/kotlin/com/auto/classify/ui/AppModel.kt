@@ -178,8 +178,18 @@ class AppModel(private val context: Context) {
                     val off = pageMismatches(plan?.optJSONObject("after"))
                     if (off.isNotEmpty()) {
                         val pinned = plan?.optInt("loosePinned") ?: 0
+                        val notes = plan?.optJSONObject("pinNotes")
+                        val causes = ArrayList<String>()
+                        notes?.keys()?.forEach { k -> causes.add((if (k == Classifier.LOOSE) "폴더 밖 앱" else "'$k'") + ": " + notes.optString(k)) }
+                        if (plan?.optBoolean("gridAssumed") == true) {
+                            causes.add("홈의 격자 크기를 읽지 못해 4x6(24칸)으로 가정했어요. 실제 칸 수가 다르면 페이지가 어긋나요")
+                        }
+                        if (causes.isEmpty()) {
+                            causes.add("계획 안에서는 밀린 곳이 없어요. 직접 정한 규칙이나 제외한 앱이 우선했거나, AI의 페이지 지정이 계획에 전달되지 않았을 수 있어요" +
+                                " (페이지를 지정한 폴더 밖 앱 ${pinned}개, 폴더 ${plan?.optJSONObject("pins")?.length() ?: 0}개)")
+                        }
                         remember("미리보기 점검", "AI가 정한 페이지와 다르게 배치된 항목이 있어요\n" + off.joinToString("\n") { "• $it" } +
-                            "\n(계획이 페이지를 지정한 폴더 밖 앱: ${pinned}개, 폴더 지정: ${plan?.optJSONObject("pins")?.length() ?: 0}개)")
+                            "\n원인\n" + causes.joinToString("\n") { "· $it" })
                     }
                 }
                 Config.ACTION_BACKUPS -> {

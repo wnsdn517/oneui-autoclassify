@@ -103,6 +103,13 @@ final class Planner {
         final Map<String, Integer> pins = new LinkedHashMap<>();
         /** Loose app package -> 1-based page requested by a (폴더밖)@N rule. */
         final Map<String, Integer> loosePins = new LinkedHashMap<>();
+        /**
+         * Why an item did not land on the page it was pinned to: "폴더 이름" or "(폴더밖)" -> reason.
+         * Filled while pages are refilled; the settings app shows it next to the page check.
+         */
+        final Map<String, String> pinNotes = new LinkedHashMap<>();
+        /** True when the grid size was unknown and 4x6 was assumed, so page capacity may be off. */
+        boolean gridAssumed;
         /** Folder title -> color set by a rule (wins over the !폴더색 directive). */
         final Map<String, Integer> ruleColors = new LinkedHashMap<>();
         Targets targets;
@@ -146,6 +153,8 @@ final class Planner {
                     .put("emptied", new JSONArray(emptied))
                     .put("pins", new JSONObject(pins))
                     .put("loosePinned", loosePins.size())
+                    .put("pinNotes", new JSONObject(pinNotes))
+                    .put("gridAssumed", gridAssumed)
                     .put("ruleColors", new JSONObject(ruleColors))
                     .put("changed", changed)
                     .put("before", before)
@@ -161,6 +170,7 @@ final class Planner {
 
     private final Context context;
     private final File dbFile;
+    private boolean gridKnown;
     private int cols = 4;
     private int rows = 6;
     /** Live {cols, rows} of the apps screen; read on every load so grid changes are picked up. */
@@ -195,6 +205,7 @@ final class Planner {
         if (cols > 0 && rows > 0) {
             this.cols = cols;
             this.rows = rows;
+            this.gridKnown = true;
         }
     }
 
@@ -697,7 +708,8 @@ final class Planner {
 
         arrange(plan.targets);
         colorFolders(plan);
-        reflowPages(plan.pins, plan.loosePins);
+        plan.gridAssumed = !gridKnown;
+        reflowPages(plan.pins, plan.loosePins, plan.pinNotes);
     }
 
     /** Rule colors first, then the !폴더색 directive; folders nobody decides keep their color. */
@@ -833,7 +845,8 @@ final class Planner {
      * pages in its current order, including what is left of a pinned page once the pages before
      * it are full. Pages that would end up empty are skipped.
      */
-    private void reflowPages(Map<String, Integer> pins, Map<String, Integer> loosePins) {
+    private void reflowPages(Map<String, Integer> pins, Map<String, Integer> loosePins, Map<String, String> notes) {
+        notes.clear();
         int capacity = Math.max(1, cols * rows);
         java.util.TreeMap<Integer, List<Row>> pinned = new java.util.TreeMap<>();
         List<Row> loose = new ArrayList<>();
@@ -852,6 +865,19 @@ final class Planner {
             if (mine != null) {
                 for (int i = 0; i < mine.size(); i += capacity) {
                     List<Row> chunk = new ArrayList<>(mine.subList(i, Math.min(mine.size(), i + capacity)));
+                    // Where this chunk lands versus the page it was pinned to, and why they differ.
+                    int landed = layout.size() + 1;
+                    String why = null;
+                    if (i > 0) why = p + "페이지에 " + mine.size() + "개를 두려 했지만 한 페이지는 " + capacity + "칸이라 다음 페이지로 넘침";
+                    else if (landed < p) why = "앞 페이지를 채울 항목이 모자라 빈 페이지 없이 " + landed + "페이지로 당겨짐";
+                    else if (landed > p) why = "앞쪽 지정 페이지가 가득 차 한 장씩 밀림";
+                    if (why != null) {
+                        for (Row r : chunk) {
+                            boolean folder = "folder".equals(r.type);
+                            String key = folder ? (r.title == null ? "" : r.title.trim()) : LOOSE;
+                            notes.putIfAbsent(key, p + "페이지 지정 → " + landed + "페이지: " + why);
+                        }
+                    }
                     // Room left on a pinned page goes to the items that would otherwise spill past it
                     // (earlier pages are already full by now), so no page is left nearly empty.
                     if (i + capacity >= mine.size()) {
