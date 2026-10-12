@@ -148,6 +148,21 @@ class AppModel(private val context: Context) {
     /** One-off messages for the snackbar. */
     val messages = MutableSharedFlow<String>(extraBufferCapacity = 16)
 
+    @Volatile
+    private var lastLayout: JSONObject? = null
+    @Volatile
+    private var layoutLatch: java.util.concurrent.CountDownLatch? = null
+
+    /** The apps screen as it is now, asked from the launcher; blocks (call off the main thread). */
+    fun fetchLayout(): JSONObject? {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        layoutLatch = latch
+        lastLayout = null
+        send("layout")
+        latch.await(6, java.util.concurrent.TimeUnit.SECONDS)
+        return lastLayout
+    }
+
     private var pendingTimeout: Runnable? = null
     private var healthTimeout: Runnable? = null
     private var logsCallback: ((String?) -> Unit)? = null
@@ -183,7 +198,11 @@ class AppModel(private val context: Context) {
                     note("health 응답 수신")
                     diagnosis = Diagnosis.from(payload, disabledFeatures())
                 }
-                Config.ACTION_LAYOUT -> folders = folderTitles(payload)
+                Config.ACTION_LAYOUT -> {
+                    folders = folderTitles(payload)
+                    lastLayout = runCatching { JSONObject(payload) }.getOrNull()
+                    layoutLatch?.countDown()
+                }
                 Config.ACTION_LOGS -> {
                     logsTimeout?.let { main.removeCallbacks(it) }
                     logsCallback?.invoke(payload)
@@ -340,8 +359,10 @@ class AppModel(private val context: Context) {
 
     private fun remember(request: String, text: String) {
         if (text.isBlank()) return
-        aiAnswer = text
-        aiHistory = AiHistory.add(prefs, AiHistory.Entry(System.currentTimeMillis(), request.trim(), text.trim()))
+        val full = if (toolsUsed.isEmpty()) text else text.trim() + "\n(사용한 도구: " + toolsUsed.joinToString(", ") + ")"
+        toolsUsed.clear()
+        aiAnswer = full
+        aiHistory = AiHistory.add(prefs, AiHistory.Entry(System.currentTimeMillis(), request.trim(), full.trim()))
     }
 
     fun clearAiHistory() {
@@ -606,6 +627,16 @@ class AppModel(private val context: Context) {
         aiSearch = null
         aiWeb = llm.web
         llm.onRetry = java.util.function.Consumer { n -> main.post { aiStage = "다시 시도 중 ($n)" } }
+        toolsUsed.clear()
+        if (prefs.let { com.auto.classify.ai.ApiLlm.prefs(context).getBoolean(com.auto.classify.ai.ApiLlm.KEY_TOOLS, true) }) {
+            llm.tools = AiTools(context, this, if (llm.web) { q -> llm.webSearch(q) } else null)
+            llm.onTool = java.util.function.Consumer { n ->
+                main.post {
+                    toolsUsed.add(AiTools.label(n))
+                    aiStage = AiTools.label(n) + " 중"
+                }
+            }
+        }
         llm.onSearch = java.util.function.Consumer { q ->
             main.post {
                 aiSearch = q
@@ -617,6 +648,8 @@ class AppModel(private val context: Context) {
     /** Web search queries the model ran for this request, and whether it may search at all. */
     private var aiSearch: String? = null
     private var aiWeb = false
+    /** Tools the AI used for the current request, shown with its answer. */
+    private val toolsUsed = LinkedHashSet<String>()
 
     /** What the streamed answer so far says the AI is doing, from how far its JSON has come. */
     private fun streamStage(kind: String, text: String): String {

@@ -26,6 +26,8 @@ public final class ApiLlm implements Llm {
     /** Which service's key is in use: "gemini", a preset's address, or "custom". */
     /** Let the model search the web (Gemini grounding, OpenRouter's web plugin). */
     public static final String KEY_WEB = "api_web";
+    /** Let the AI look things up with tools (layout, folder contents, usage, app info). */
+    public static final String KEY_TOOLS = "api_tools";
     public static final String KEY_SLOT = "api_slot";
     /** Keys are kept per service ("api_key.gemini", …), so switching never sends one service's key to another. */
     public static final String KEY_PREFIX = "api_key.";
@@ -39,6 +41,20 @@ public final class ApiLlm implements Llm {
     private final String provider, key, base;
     private String model;
     private final SharedPreferences prefs;
+    /** What the model may call while it works; null = no tools. */
+    public interface Tools {
+        /** Function declarations: [{name, description, parameters (JSON schema)}]. */
+        JSONArray declarations();
+
+        String call(String name, JSONObject args) throws Exception;
+    }
+
+    public Tools tools;
+    /** Gets the name of each tool as the model calls it. */
+    public java.util.function.Consumer<String> onTool;
+    private static final int MAX_TOOL_STEPS = 8;
+    /** Notes shown beside models in the picker (search support, free), filled by listModels(). */
+    public final java.util.Map<String, String> notes = new java.util.LinkedHashMap<>();
     /** On when the model may search the web; only set for services that support it. */
     public boolean web;
     /** Gets the search queries the model ran, as they happen (Gemini reports them). */
@@ -100,7 +116,13 @@ public final class ApiLlm implements Llm {
     /** @param onText when set, the answer is streamed and this gets the text so far after each piece */
     public String generate(String system, String user, boolean json, java.util.function.Consumer<String> onText) throws Exception {
         if (key.isEmpty()) throw new IllegalStateException("API 키가 없어요");
-        if (web) system += "\nYou may search the web to identify apps you don't recognise; the answer format stays the same.";
+        if (web && tools == null) system += "\nYou may search the web to identify apps you don't recognise; the answer format stays the same.";
+        if (tools != null) {
+            system += "\nYou can call tools to check facts instead of guessing: the real apps-screen layout, what is inside a folder, "
+                    + "how long each app was used, details of an app" + (web ? ", and web_search" : "") + ". "
+                    + "Call them whenever the request depends on such facts (e.g. ordering by usage, 'my most used apps', "
+                    + "checking what a folder really holds) and to verify your plan, then give the final answer in the required format.";
+        }
         if (model.isEmpty()) pickModel();
         // Busy or flaky service (503, 500, 429, timeouts): wait and try again a few times.
         long[] waits = {5000, 15000, 30000, 60000};
@@ -124,6 +146,17 @@ public final class ApiLlm implements Llm {
     public java.util.function.Consumer<String> onRetry;
 
     private String once(String system, String user, boolean json, java.util.function.Consumer<String> onText) throws Exception {
+        if (tools != null) {
+            try {
+                return withTools(system, user);
+            } catch (Http.HttpError e) {
+                if (e.code != 404) throw e;
+                String before = model;
+                pickModel();
+                if (model.equals(before)) throw e;
+                return withTools(system, user);
+            }
+        }
         try {
             return onText == null ? call(system, user, json) : stream(system, user, json, onText);
         } catch (Http.HttpError e) {
@@ -134,6 +167,114 @@ public final class ApiLlm implements Llm {
             if (model.equals(before)) throw e;
             return onText == null ? call(system, user, json) : stream(system, user, json, onText);
         }
+    }
+
+    private String runTool(String name, JSONObject args) {
+        if (onTool != null) onTool.accept(name);
+        String r;
+        try {
+            r = tools.call(name, args == null ? new JSONObject() : args);
+        } catch (Exception e) {
+            r = "{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+        }
+        return r.length() > 12000 ? r.substring(0, 12000) + "…(truncated)" : r;
+    }
+
+    /** Runs the request as a tool-calling conversation until the model answers in text. */
+    private String withTools(String system, String user) throws Exception {
+        lastIn = lastOut = 0;
+        JSONArray decls = tools.declarations();
+        if (GEMINI.equals(provider)) {
+            JSONArray contents = new JSONArray().put(new JSONObject().put("role", "user")
+                    .put("parts", new JSONArray().put(new JSONObject().put("text", user))));
+            for (int step = 0; step <= MAX_TOOL_STEPS; step++) {
+                JSONObject body = new JSONObject()
+                        .put("systemInstruction", new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", system))))
+                        .put("contents", contents)
+                        .put("generationConfig", new JSONObject().put("temperature", 0.2));
+                // The last round has no tools, so the model has to answer.
+                if (step < MAX_TOOL_STEPS) body.put("tools", new JSONArray().put(new JSONObject().put("functionDeclarations", decls)));
+                JSONObject out = new JSONObject(Http.post(GEMINI_BASE + "/models/" + model + ":generateContent",
+                        body.toString(), "x-goog-api-key", key));
+                JSONObject usage = out.optJSONObject("usageMetadata");
+                if (usage != null) {
+                    lastIn += usage.optInt("promptTokenCount");
+                    lastOut += usage.optInt("candidatesTokenCount") + usage.optInt("thoughtsTokenCount");
+                }
+                JSONArray cands = out.optJSONArray("candidates");
+                if (cands == null || cands.length() == 0) throw new IllegalStateException("빈 응답 (안전 필터 등)");
+                JSONObject content = cands.getJSONObject(0).optJSONObject("content");
+                JSONArray parts = content == null ? null : content.optJSONArray("parts");
+                JSONArray responses = new JSONArray();
+                StringBuilder text = new StringBuilder();
+                for (int i = 0; parts != null && i < parts.length(); i++) {
+                    JSONObject part = parts.getJSONObject(i);
+                    JSONObject call = part.optJSONObject("functionCall");
+                    if (call != null) {
+                        String name = call.optString("name");
+                        String result = runTool(name, call.optJSONObject("args"));
+                        responses.put(new JSONObject().put("functionResponse", new JSONObject().put("name", name)
+                                .put("response", new JSONObject().put("result", result))));
+                    } else if (!part.optBoolean("thought")) {
+                        text.append(part.optString("text"));
+                    }
+                }
+                if (responses.length() == 0) {
+                    if (text.length() == 0) throw new IllegalStateException("빈 응답");
+                    return text.toString();
+                }
+                // Keep the model's turn exactly as it came (Gemini needs its thought signatures back).
+                contents.put(content);
+                contents.put(new JSONObject().put("role", "user").put("parts", responses));
+            }
+            throw new IllegalStateException("AI가 도구를 너무 많이 써서 멈췄어요");
+        }
+        JSONArray defs = new JSONArray();
+        for (int i = 0; i < decls.length(); i++) {
+            JSONObject d = decls.getJSONObject(i);
+            defs.put(new JSONObject().put("type", "function").put("function", d));
+        }
+        JSONArray messages = new JSONArray()
+                .put(new JSONObject().put("role", "system").put("content", system))
+                .put(new JSONObject().put("role", "user").put("content", user));
+        for (int step = 0; step <= MAX_TOOL_STEPS; step++) {
+            JSONObject body = new JSONObject().put("model", model).put("messages", messages).put("temperature", 0.2);
+            if (step < MAX_TOOL_STEPS) body.put("tools", defs).put("tool_choice", "auto");
+            String raw = Http.post(openAiBase() + "/chat/completions", body.toString(), "Authorization", "Bearer " + key);
+            JSONObject o = new JSONObject(raw);
+            JSONObject usage = o.optJSONObject("usage");
+            if (usage != null) {
+                lastIn += usage.optInt("prompt_tokens");
+                lastOut += usage.optInt("completion_tokens");
+            }
+            JSONArray choices = o.optJSONArray("choices");
+            JSONObject msg = choices == null || choices.length() == 0 ? null : choices.getJSONObject(0).optJSONObject("message");
+            JSONArray calls = msg == null ? null : msg.optJSONArray("tool_calls");
+            if (calls == null || calls.length() == 0) return Http.chatText(raw);
+            messages.put(msg);
+            for (int i = 0; i < calls.length(); i++) {
+                JSONObject c = calls.getJSONObject(i);
+                JSONObject fn = c.optJSONObject("function");
+                if (fn == null) continue;
+                JSONObject args;
+                try {
+                    args = new JSONObject(fn.optString("arguments", "{}"));
+                } catch (Exception e) {
+                    args = new JSONObject();
+                }
+                messages.put(new JSONObject().put("role", "tool").put("tool_call_id", c.optString("id"))
+                        .put("content", runTool(fn.optString("name"), args)));
+            }
+        }
+        throw new IllegalStateException("AI가 도구를 너무 많이 써서 멈췄어요");
+    }
+
+    /** A grounded web search for one question; used as a tool. */
+    public String webSearch(String query) throws Exception {
+        if (!supportsWeb(provider, base)) throw new IllegalStateException("이 서비스는 웹 검색을 지원하지 않아요");
+        ApiLlm s = new ApiLlm(provider, key, model, base, null);
+        s.web = true;
+        return s.generate("Search the web and answer briefly and factually in Korean; key facts only.", query);
     }
 
     private JSONObject geminiBody(String system, String user, boolean json) throws Exception {
@@ -271,7 +412,9 @@ public final class ApiLlm implements Llm {
                     JSONArray methods = m.optJSONArray("supportedGenerationMethods");
                     if (methods == null || !methods.toString().contains("\"generateContent\"")) continue;
                     String name = m.optString("name").replaceFirst("^models/", "");
-                    if (name.startsWith("gemini")) out.add(name);
+                    if (!name.startsWith("gemini") || !isTextModel(name)) continue;
+                    out.add(name);
+                    notes.put(name, geminiWeb(name) ? "검색 가능" : "검색 불가");
                 }
                 page = o.optString("nextPageToken", null);
                 if (page != null && page.isEmpty()) page = null;
@@ -279,9 +422,40 @@ public final class ApiLlm implements Llm {
         } else {
             JSONObject o = new JSONObject(Http.get(openAiBase() + "/models", "Authorization", "Bearer " + key));
             JSONArray data = o.optJSONArray("data");
-            for (int i = 0; data != null && i < data.length(); i++) out.add(data.getJSONObject(i).optString("id"));
+            for (int i = 0; data != null && i < data.length(); i++) {
+                JSONObject m = data.getJSONObject(i);
+                String id = m.optString("id");
+                if (id.isEmpty() || !isTextModel(id)) continue;
+                JSONObject arch = m.optJSONObject("architecture");
+                JSONArray outputs = arch == null ? null : arch.optJSONArray("output_modalities");
+                if (outputs != null && !(outputs.length() == 1 && "text".equals(outputs.optString(0)))) continue; // images, audio…
+                out.add(id);
+                JSONObject pricing = m.optJSONObject("pricing");
+                boolean free = id.endsWith(":free")
+                        || pricing != null && "0".equals(pricing.optString("prompt")) && "0".equals(pricing.optString("completion"));
+                if (free) notes.put(id, "무료");
+            }
         }
         return out;
+    }
+
+    /** Models that write text: not image, speech, audio, embedding or moderation models. */
+    static boolean isTextModel(String id) {
+        String l = id.toLowerCase(java.util.Locale.ROOT);
+        for (String bad : new String[]{"image", "imagen", "veo", "tts", "audio", "live", "embed", "robotics", "computer-use",
+                "aqa", "whisper", "transcribe", "speech", "rerank", "moderation", "guard", "dall-e", "sdxl", "flux", "stable-diffusion"}) {
+            if (l.contains(bad)) return false;
+        }
+        return true;
+    }
+
+    private static final Pattern GEMINI_NAME_VERSION = Pattern.compile("^gemini-(\\d+(?:\\.\\d+)?)");
+
+    /** Gemini 2.x and later (and the -latest aliases) can ground answers with Google Search. */
+    static boolean geminiWeb(String id) {
+        if (id.endsWith("-latest")) return true;
+        Matcher v = GEMINI_NAME_VERSION.matcher(id);
+        return v.find() && Double.parseDouble(v.group(1)) >= 2.0;
     }
 
     private static final Pattern GEMINI_VERSION = Pattern.compile("^gemini-(\\d+(?:\\.\\d+)?)-flash$");

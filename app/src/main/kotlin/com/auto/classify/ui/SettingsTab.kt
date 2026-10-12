@@ -110,6 +110,7 @@ private fun AiConnection(model: AppModel) {
     }
     var key by remember { mutableStateOf(ApiLlm.keyFor(sp, sp.getString(ApiLlm.KEY_SLOT, slot())!!)) }
     var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var notes by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var loading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -128,7 +129,10 @@ private fun AiConnection(model: AppModel) {
         message = null
         scope.launch {
             val r = runCatching {
-                withContext(Dispatchers.IO) { ApiLlm(provider, key, modelName, base, null).listModels() }
+                withContext(Dispatchers.IO) {
+                    val api = ApiLlm(provider, key, modelName, base, null)
+                    api.listModels().also { notes = HashMap(api.notes) }
+                }
             }
             loading = false
             r.onSuccess { list ->
@@ -197,7 +201,7 @@ private fun AiConnection(model: AppModel) {
     )
     if (models.isNotEmpty()) {
         WindowDropdownPreference(
-            items = models,
+            items = models.map { m -> notes[m]?.let { "$m · $it" } ?: m },
             selectedIndex = models.indexOf(modelName).coerceAtLeast(0),
             title = "모델",
             
@@ -219,6 +223,30 @@ private fun AiConnection(model: AppModel) {
             Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MiuixTheme.textStyles.footnote1,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
+    var tools by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_TOOLS, true)) }
+    SwitchPreference(
+        title = "AI 도구 사용",
+        summary = "AI가 현재 구성·폴더 내용·앱 사용량을 직접 확인하며 판단해요 (요청이 느려지고 토큰이 더 들어요)",
+        checked = tools,
+        onCheckedChange = { tools = it; sp.edit().putBoolean(ApiLlm.KEY_TOOLS, it).apply() },
+    )
+    var granted by remember { mutableStateOf(AiTools.usageGranted(context)) }
+    val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(owner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) granted = AiTools.usageGranted(context)
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    ArrowPreference(
+        title = "앱 사용 기록 접근",
+        summary = if (granted) "허용됨 · AI가 앱 사용량을 볼 수 있어요" else "허용 안 됨 · 눌러서 설정을 열고 AutoClassify를 켜 주세요",
+        onClick = {
+            context.startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                .setData(Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        },
+    )
     TextButton(
         if (loading) "확인하는 중…" else "연결 확인",
         { loadModels() },
