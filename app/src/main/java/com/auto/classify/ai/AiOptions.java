@@ -45,8 +45,14 @@ public final class AiOptions {
         add(new Opt(Config.KEY_CLEAN_STALE, "맞지 않는 자동 폴더 정리", Kind.BOOL, 0, 0));
         add(new Opt(Config.KEY_SCREEN_OFF_TIDY, "화면 꺼질 때 새 앱 위치 정리", Kind.BOOL, 0, 0));
         add(new Opt(Config.KEY_DETAILED, "세부 카테고리", Kind.BOOL, 0, 0));
-        // Not the "unclassified apps" settings: they move apps around, and the AI used them (wrongly) to
-        // answer layout requests. Layout goes through folders, page and loose_page instead.
+        add(new Opt(Config.KEY_UNCLASSIFIED, "맞는 폴더가 없을 때", Kind.CHOICE, 0, 0,
+                Config.UNCLASSIFIED_KEEP, Config.UNCLASSIFIED_FREE, Config.UNCLASSIFIED_FOLDER, Config.UNCLASSIFIED_PAGE));
+        add(new Opt(Config.KEY_UNCLASSIFIED_FOLDER, "맞는 폴더가 없을 때 모을 폴더 이름", Kind.TEXT, 0, 0));
+        add(new Opt(Config.KEY_UNCLASSIFIED_PAGE, "맞는 폴더가 없을 때 둘 페이지", Kind.INT, 1, 20));
+        // The AI tab's own settings.
+        add(new Opt(Config.KEY_AI_INSTALL, "새 앱을 설치하면 AI로 분류", Kind.BOOL, 0, 0));
+        add(new Opt(Config.KEY_AI_COOLDOWN, "자동 AI 요청 사이 쿨다운(초)", Kind.INT, 0, 300));
+        add(new Opt(Config.KEY_AI_DAILY, "하루 최대 자동 AI 요청", Kind.INT, 1, 100));
     }
 
     private static void add(Opt o) {
@@ -55,8 +61,9 @@ public final class AiOptions {
 
     /** What the AI is told it may change, appended to its instructions. */
     public static String prompt() {
-        StringBuilder sb = new StringBuilder("OPTIONS (only when the user explicitly asks to change that setting; never to carry out a "
-                + "layout request such as pages or folders; lines like  set:KEY=VALUE ):\n");
+        StringBuilder sb = new StringBuilder("OPTIONS (settings you may change when the request calls for it, as  set:KEY=VALUE ; "
+                + "the current values are listed under 'Current settings'; change only what the request is about and never flip a "
+                + "setting back and forth):\n");
         for (Opt o : OPTS.values()) {
             sb.append("  set:").append(o.key).append('=');
             switch (o.kind) {
@@ -73,9 +80,48 @@ public final class AiOptions {
                     sb.append("text");
             }
             sb.append("   ").append(o.label);
+            if (Config.KEY_UNCLASSIFIED.equals(o.key)) {
+                sb.append(" (keep = leave where they are, free = loose on pages no rule uses, folder = gather in one folder "
+                        + "(then set the folder name, e.g. 기타), page = loose on one page)");
+            }
             sb.append('\n');
         }
         return sb.toString();
+    }
+
+    /** The current value of every setting the AI may change, as lines for the prompt. */
+    public static String snapshot(SharedPreferences p) {
+        StringBuilder sb = new StringBuilder("Current settings:\n");
+        for (Opt o : OPTS.values()) {
+            sb.append("  ").append(o.key).append('=');
+            switch (o.kind) {
+                case BOOL:
+                    sb.append(p.getBoolean(o.key, defaultBool(o.key)));
+                    break;
+                case INT:
+                    sb.append(p.getInt(o.key, defaultInt(o.key)));
+                    break;
+                case CHOICE:
+                    sb.append(p.getString(o.key, Config.UNCLASSIFIED_FREE));
+                    break;
+                default:
+                    sb.append(p.getString(o.key, "기타"));
+            }
+            sb.append("   (").append(o.label).append(")\n");
+        }
+        return sb.append('\n').toString();
+    }
+
+    private static int defaultInt(String key) {
+        switch (key) {
+            case Config.KEY_MIN_APPS:
+                return 2;
+            case Config.KEY_AI_COOLDOWN:
+            case Config.KEY_AI_DAILY:
+                return 30;
+            default:
+                return 1;
+        }
     }
 
     /** @return the cleaned "key=value" for a valid option line (with or without "set:"), else null */
@@ -136,7 +182,7 @@ public final class AiOptions {
                     changes.add(o.label + ": " + before + " → " + (Boolean.parseBoolean(v) ? "켬" : "끔"));
                     break;
                 case INT:
-                    int cur = p.getInt(key, -1);
+                    int cur = p.contains(key) ? p.getInt(key, -1) : -1;
                     if (cur == Integer.parseInt(v)) continue;
                     ed.putInt(key, Integer.parseInt(v));
                     changes.add(o.label + ": " + (cur < 0 ? "기본" : String.valueOf(cur)) + " → " + v);
@@ -156,6 +202,7 @@ public final class AiOptions {
         switch (key) {
             case Config.KEY_SKIP_MOVED:
             case Config.KEY_DETAILED:
+            case Config.KEY_AI_INSTALL:
                 return false;
             default:
                 return true;

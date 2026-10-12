@@ -196,7 +196,7 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                     ArrowPreference("고급",
                         onClick = { advanced = !advanced })
                     if (advanced) {
-                        IntSlider(model, Config.KEY_MIN_APPS, 2, 1..6, "새 폴더 최소 앱 수", "개")
+                        IntSlider(model, Config.KEY_MIN_APPS, 2, 1..10, "새 폴더 최소 앱 수 (1이면 앱 1개짜리 폴더도 유지)", "개")
                         PrefSwitch(model, Config.KEY_CREATE_FOLDERS, true, "폴더가 없으면 새로 만들기", null)
                         PrefSwitch(model, Config.KEY_SKIP_MOVED, false, "손으로 옮긴 앱은 건너뛰기", null)
                         PrefSwitch(model, Config.KEY_CLEAN_STALE, true, "예전 자동 폴더 정리", null)
@@ -240,6 +240,29 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
         summary = instruction.ifBlank { "어떻게 정리할지 적어 주세요" },
         onClick = { editing = true },
     )
+    var memoOpen by remember { mutableStateOf(false) }
+    val memoCount = com.auto.classify.ai.AiMemo.load(p).size
+    ArrowPreference(
+        title = "AI 메모",
+        summary = if (memoCount == 0) "AI가 기억해 둘 선호나 사실을 적어요 (AI도 스스로 저장해요)" else "${memoCount}개 저장됨 · 눌러서 보기·수정",
+        onClick = { memoOpen = true },
+    )
+    if (memoOpen) {
+        var draft by remember { mutableStateOf(p.getString(Config.KEY_AI_MEMO, "")!!) }
+        top.yukonga.miuix.kmp.window.WindowDialog(show = true, title = "AI 메모", onDismissRequest = { memoOpen = false }) {
+            androidx.compose.foundation.layout.Column {
+                val maxHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.4f).dp
+                androidx.compose.foundation.layout.Column(Modifier.heightIn(max = maxHeight).verticalScroll(rememberScrollState())) {
+                    TextField(value = draft, onValueChange = { draft = it }, minLines = 5, modifier = Modifier.fillMaxWidth(),
+                        label = "한 줄에 하나", useLabelAsPlaceholder = true)
+                }
+                SheetActions("취소", { memoOpen = false }, "저장", {
+                    model.edit({ putString(Config.KEY_AI_MEMO, draft.trim()) }, reload = false)
+                    memoOpen = false
+                })
+            }
+        }
+    }
     androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
         when {
             !hasKey -> TextButton("AI 연결하기", openSettings, Modifier.fillMaxWidth())

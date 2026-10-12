@@ -43,6 +43,9 @@ public final class AiOrganizer {
         public String answer = "";
         /** Folder names in the order the apps screen should show them; empty = no opinion. */
         public final List<String> folderOrder = new ArrayList<>();
+        /** Notes to keep for later requests, and note fragments to forget (see AiMemo). */
+        public final List<String> memoAdd = new ArrayList<>();
+        public final List<String> memoRemove = new ArrayList<>();
         /** True for a follow-up (refine): pages and order the answer omits are kept from before. */
         public boolean refined;
         public String note = "";
@@ -52,7 +55,7 @@ public final class AiOrganizer {
     private static final String RULES_OF_THE_ANSWER =
             "Answer with one JSON object only:\n"
                     + "{\"answer\":\"\", \"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
-                    + "\"loose_page\":0, \"folder_order\":[\"폴더 이름\"], \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"note\":\"짧은 한국어 요약\"}\n"
+                    + "\"loose_page\":0, \"folder_order\":[\"폴더 이름\"], \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"memo_add\":[\"짧은 메모\"], \"memo_remove\":[\"지울 메모의 일부\"], \"note\":\"짧은 한국어 요약\"}\n"
                     + "- page: 0 = anywhere. When the user asks to split things across pages or put folders/apps on a page, "
                     + "set page (1 = first page) on those folders, and loose_page for the loose apps. loose_page moves every app listed "
                     + "in loose, so to put certain apps on a page outside folders, list exactly those apps in loose and set loose_page. "
@@ -78,6 +81,9 @@ public final class AiOrganizer {
                     + "- answer: when the user asks a question or wants an explanation (\"왜 이렇게 했어?\", \"이 앱은 뭐야?\"), "
                     + "answer it here in Korean, short and concrete; folders may then stay as they are. Otherwise leave it empty.\n"
                     + "- note: one or two Korean sentences saying what you did, or why you changed nothing.\n"
+                    + "- memo_add: short notes worth keeping for FUTURE requests: lasting preferences or facts the user states "
+                    + "(e.g. 루팅 앱은 항상 2페이지, ViPER4Android는 루팅 모듈). Not one-off requests. memo_remove: a fragment of a saved "
+                    + "note to delete when the user withdraws or contradicts it. Both usually empty.\n"
                     + "- options: only when the user asks to change an app setting (not the layout). KEY=VALUE pairs from:\n"
                     + AiOptions.prompt().replace("set:", "  ");
 
@@ -216,8 +222,11 @@ public final class AiOrganizer {
     public static final String STAGE_DEV = "만든 곳 확인 중";
     public static final String STAGE_SEND = "AI에게 보내는 중";
 
-    private static String header(String instruction, int minApps, Apps a) {
-        return "User's instruction:\n" + instruction.trim() + "\n\nMIN = " + Math.max(2, minApps)
+    private static String header(Context context, String instruction, int minApps, Apps a) {
+        android.content.SharedPreferences prefs = com.auto.classify.core.Prefs.open(context);
+        return AiMemo.prompt(prefs) + AiOptions.snapshot(prefs)
+                + "User's instruction:\n" + instruction.trim() + "\n\nMIN = " + Math.max(1, minApps)
+                + (minApps <= 1 ? " (a folder with a single app is fine; do not merge folders only because they are small)" : "")
                 + "\nKnown categories: " + String.join(", ", SmartClassifier.broadFolders())
                 + "\n\nApps (number. name | package | developer | automatic category, ? = unknown):\n"
                 + String.join("\n", a.lines);
@@ -235,7 +244,7 @@ public final class AiOrganizer {
         current.assign.putAll(assign);
         current.pages.putAll(pages);
         current.folderOrder.addAll(order);
-        String user = header(instruction, minApps, a) + "\n\nCurrent organization:\n" + describe(current, a)
+        String user = header(context, instruction, minApps, a) + "\n\nCurrent organization:\n" + describe(current, a)
                 + "\nFollow-up request:\n" + request.trim();
         try {
             Plan p = parse(llm.generate(SYSTEM_REFINE, user, true,
@@ -279,7 +288,7 @@ public final class AiOrganizer {
                                 Progress progress) throws Exception {
         Apps a = apps(context, progress);
         if (progress != null) progress.on(STAGE_SEND, "");
-        String header = header(instruction, minApps, a);
+        String header = header(context, instruction, minApps, a);
         Plan plan;
         try {
             plan = parse(llm.generate(SYSTEM_ORGANIZE, header, true,
@@ -396,9 +405,20 @@ public final class AiOrganizer {
             String n = order.optString(i).trim();
             if (!n.isEmpty() && !p.folderOrder.contains(n)) p.folderOrder.add(n);
         }
+        JSONArray memoAdd = o.optJSONArray("memo_add");
+        for (int i = 0; memoAdd != null && i < memoAdd.length(); i++) {
+            String n = memoAdd.optString(i).trim();
+            if (!n.isEmpty()) p.memoAdd.add(n);
+        }
+        JSONArray memoRemove = o.optJSONArray("memo_remove");
+        for (int i = 0; memoRemove != null && i < memoRemove.length(); i++) {
+            String n = memoRemove.optString(i).trim();
+            if (!n.isEmpty()) p.memoRemove.add(n);
+        }
         p.answer = o.optString("answer").trim();
         p.note = o.optString("note");
-        if (p.assign.isEmpty() && p.answer.isEmpty() && p.options.isEmpty() && p.settings.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
+        if (p.assign.isEmpty() && p.answer.isEmpty() && p.options.isEmpty() && p.settings.isEmpty()
+                && p.memoAdd.isEmpty() && p.memoRemove.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
         return p;
     }
 

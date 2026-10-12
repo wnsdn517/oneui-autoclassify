@@ -38,6 +38,9 @@ public final class RuleAssistant {
         public final String raw;
         /** The reply when the request was a question rather than something to organize. */
         public String answer = "";
+        /** Notes to keep / forget for later requests (lines memo: and forget:). */
+        public final java.util.List<String> memoAdd = new ArrayList<>();
+        public final java.util.List<String> memoRemove = new ArrayList<>();
         /** App settings the request asked to change ("min_apps=3"), already validated. */
         public final java.util.List<String> options = new ArrayList<>();
 
@@ -72,6 +75,8 @@ public final class RuleAssistant {
                     + "  !폴더색 아이콘|카테고리|기본|그대로   color folders by their apps' icons, by category, or reset\n"
                     + "FOLDER COLOR for one folder: FOLDER#COLOR, COLOR = 빨강 주황 노랑 초록 청록 파랑 보라 분홍 회색 흰색 검정 기본 or RRGGBB,\n"
                     + "  e.g. 놀이#빨강@2|cat:게임\n\n"
+                    + "To keep a lasting preference or fact the user states for later requests, write  memo:<short note>  ; "
+                    + "to delete a saved note, write  forget:<a fragment of it>  (rarely needed).\n"
                     + "If the user asks a question or wants an explanation instead, write one line  say:<short Korean answer>  "
                     + "(you may also write rules in the same answer).\n"
                     + AiOptions.prompt() + "\n"
@@ -111,7 +116,8 @@ public final class RuleAssistant {
                              java.util.function.Consumer<String> onText) throws Exception {
         // A small model does much better fixing a draft than starting from nothing.
         Result draft = runOffline(context, request, existingFolders);
-        String user = brief(context, existingFolders) + "\nRequest: " + request.trim()
+        android.content.SharedPreferences prefs = Prefs.open(context);
+        String user = AiMemo.prompt(prefs) + AiOptions.snapshot(prefs) + brief(context, existingFolders) + "\nRequest: " + request.trim()
                 + (draft.rules.isEmpty() ? "" : "\nDraft from a simple parser (may be wrong or incomplete; "
                 + "fix it and keep what is right):\n" + draft.rules)
                 + "\nAnswer:";
@@ -132,6 +138,8 @@ public final class RuleAssistant {
             Result d = new Result(draft.rules, r.dropped, draft.unsupported, raw);
             d.options.addAll(r.options);
             d.answer = r.answer;
+            d.memoAdd.addAll(r.memoAdd);
+            d.memoRemove.addAll(r.memoRemove);
             return d;
         }
         return r;
@@ -153,12 +161,21 @@ public final class RuleAssistant {
         int dropped = 0;
         java.util.List<String> options = new ArrayList<>();
         StringBuilder answer = new StringBuilder();
+        java.util.List<String> memoAdd = new ArrayList<>(), memoRemove = new ArrayList<>();
         // Thinking models write their reasoning first.
         raw = raw.replaceAll("(?s)<think>.*?</think>", "").replaceAll("(?s)^.*</think>", "");
         for (String line : raw.replace("```", "").split("\n")) {
             String l = line.trim();
             if (l.startsWith("- ") || l.startsWith("* ") && l.length() > 2 && l.charAt(2) != '|') l = l.substring(2).trim();
             if (l.isEmpty()) continue;
+            if (l.startsWith("memo:")) {
+                memoAdd.add(l.substring(5).trim());
+                continue;
+            }
+            if (l.startsWith("forget:")) {
+                memoRemove.add(l.substring(7).trim());
+                continue;
+            }
             if (l.startsWith("say:")) {
                 if (answer.length() > 0) answer.append(' ');
                 answer.append(l.substring(4).trim());
@@ -186,6 +203,8 @@ public final class RuleAssistant {
         Result res = new Result(ok.toString().trim(), dropped, unsupported, raw);
         res.options.addAll(options);
         res.answer = answer.toString();
+        res.memoAdd.addAll(memoAdd);
+        res.memoRemove.addAll(memoRemove);
         return res;
     }
 

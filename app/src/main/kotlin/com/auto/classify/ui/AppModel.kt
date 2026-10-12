@@ -467,24 +467,22 @@ class AppModel(private val context: Context) {
             main.post {
                 aiRunning = false
                 r.onSuccess { res ->
-                    if (res.rules.isBlank() && res.options.isEmpty() && res.answer.isNotBlank()) {
+                    if (res.rules.isBlank() && res.options.isEmpty() && res.memoAdd.isEmpty() && res.memoRemove.isEmpty()
+                        && res.answer.isNotBlank()) {
                         remember(text, res.answer)
                         return@onSuccess
                     }
-                    if (res.rules.isBlank() && res.options.isEmpty()) {
+                    if (res.rules.isBlank() && res.options.isEmpty() && res.memoAdd.isEmpty() && res.memoRemove.isEmpty()) {
                         aiError = "알아듣지 못했어요" + res.unsupported.firstOrNull()?.let { " · $it" }.orEmpty()
                         return@onSuccess
                     }
                     val old = prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
-                    var changed = emptyList<String>()
-                    edit({
-                        if (res.rules.isNotBlank()) putString(Config.KEY_RULES, mergeRules(res.rules, old))
-                        changed = com.auto.classify.ai.AiOptions.apply(prefs, this, res.options)
-                    })
+                    if (res.rules.isNotBlank()) edit({ putString(Config.KEY_RULES, mergeRules(res.rules, old)) })
+                    val (changed, memoChanges) = applyExtras(res.options, res.memoAdd, res.memoRemove)
                     val added = res.rules.lines().count { it.isNotBlank() && !it.startsWith("#") }
                     toast(listOfNotNull(if (added > 0) "규칙 ${added}개 추가" else null, optionsNotice(changed)).joinToString("\n"))
                     remember(text, listOf(res.answer, if (added > 0) "규칙 ${added}개 추가" else "", changed.joinToString("\n") { "설정 변경: $it" },
-                        res.unsupported.joinToString("\n"))
+                        memoChanges.joinToString("\n"), res.unsupported.joinToString("\n"))
                         .filter { it.isNotBlank() }.joinToString("\n"))
                     request("plan")
                 }.onFailure { aiError = "AI 실패: ${it.message}" }
@@ -606,6 +604,18 @@ class AppModel(private val context: Context) {
         return out
     }
 
+    /** Applies the settings and notes the AI asked for; returns (setting changes, note changes). */
+    private fun applyExtras(options: List<String>, memoAdd: List<String>, memoRemove: List<String>): Pair<List<String>, List<String>> {
+        var changed = emptyList<String>()
+        var memo = emptyList<String>()
+        if (options.isEmpty() && memoAdd.isEmpty() && memoRemove.isEmpty()) return changed to memo
+        edit({
+            changed = com.auto.classify.ai.AiOptions.apply(prefs, this, options)
+            memo = com.auto.classify.ai.AiMemo.apply(prefs, this, memoAdd, memoRemove)
+        })
+        return changed to memo
+    }
+
     /** What to tell the user when the AI changed settings on request; null when it changed none. */
     private fun optionsNotice(changes: List<String>): String? =
         if (changes.isEmpty()) null else "AI가 요청대로 설정을 바꿨어요\n" + changes.joinToString("\n") { "• $it" }
@@ -720,9 +730,13 @@ class AppModel(private val context: Context) {
                         val ins = prefs.getString(Config.KEY_AI_REQUEST, "")!!
                         edit({ putString(Config.KEY_AI_REQUEST, (ins.trim() + "\n" + append).trim()) }, reload = false)
                     }
+                    val (changed, memoChanges) = applyExtras(plan.options, plan.memoAdd, plan.memoRemove)
+                    optionsNotice(changed)?.let { toast(it) }
                     if (plan.assign.isEmpty()) {
-                        // Only a reply (a question): nothing to reorganize.
-                        remember(asked, plan.answer)
+                        // No folder change: a reply to a question, a settings change or a note.
+                        remember(asked, listOf(plan.answer, plan.note, changed.joinToString("\n") { "설정 변경: $it" },
+                            memoChanges.joinToString("\n")).filter { it.isNotBlank() }.joinToString("\n"))
+                        if (changed.isNotEmpty()) request("plan")
                         return@onSuccess
                     }
                     setMode(Config.MODE_AI)
@@ -731,18 +745,15 @@ class AppModel(private val context: Context) {
                         val key = line.removePrefix("!").trim().substringBefore(' ')
                         rules = setDirective(rules, key, line.removePrefix("!").trim().substringAfter(' ').trim())
                     }
-                    var changed = emptyList<String>()
                     edit({
-                        changed = com.auto.classify.ai.AiOptions.apply(prefs, this, plan.options)
                         putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(plan.assign))
                         putString(Config.KEY_AI_NOTE, plan.note)
                         putString(Config.KEY_AI_PAGES, org.json.JSONObject(plan.pages as Map<*, *>).toString())
                         putString(Config.KEY_AI_ORDER, JSONArray(plan.folderOrder).toString())
                         putString(Config.KEY_RULES, rules)
                     })
-                    optionsNotice(changed)?.let { toast(it) }
-                    remember(asked, listOf(plan.answer, plan.note, changed.joinToString("\n") { "설정 변경: $it" })
-                        .filter { it.isNotBlank() }.joinToString("\n"))
+                    remember(asked, listOf(plan.answer, plan.note, changed.joinToString("\n") { "설정 변경: $it" },
+                        memoChanges.joinToString("\n")).filter { it.isNotBlank() }.joinToString("\n"))
                     request("plan")
                 }.onFailure { aiError = "AI 실패: ${it.message}" }
             }

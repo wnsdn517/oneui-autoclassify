@@ -31,6 +31,8 @@ public final class Config {
     public static final String KEY_AI_PAGES = "ai_pages";
     /** Folder order the AI chose, JSON array of folder names; folders not named follow in their current order. */
     public static final String KEY_AI_ORDER = "ai_order";
+    /** Notes the AI keeps between requests (one per line); see ai.AiMemo. */
+    public static final String KEY_AI_MEMO = "ai_memo";
     /** Packages never touched, one per line. */
     public static final String KEY_EXCLUDED = "excluded";
     /** When true, apps the user moved out of an auto folder are left alone afterwards. */
