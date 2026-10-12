@@ -186,6 +186,7 @@ public class ClassifierProvider extends ContentProvider {
         int[] colors = new int[pkgs.length];
         java.util.Arrays.fill(colors, NO_COLOR);
         Classifier rules = new Classifier(applyRules ? p.getString(Config.KEY_RULES, Config.DEFAULT_RULES) : null);
+        if (applyRules) rememberRuleFolders(p, rules);
 
         String mode = modeOverride != null ? modeOverride : p.getString(Config.KEY_MODE, Config.MODE_CATEGORY);
         // True when the AI was asked about the new app and gave no answer (error, 429, limits).
@@ -264,6 +265,8 @@ public class ClassifierProvider extends ContentProvider {
         out.putStringArray("reasons", reasons);
         out.putIntArray("pages", pages);
         out.putBoolean("aiMissed", aiMissed);
+        // The AI already merged folders below the minimum; a smaller folder it made was asked for.
+        out.putBoolean("aiMode", Config.MODE_AI.equals(mode));
         if (Config.MODE_AI.equals(mode)) {
             try {
                 org.json.JSONArray arr = new org.json.JSONArray(p.getString(Config.KEY_AI_ORDER, "[]"));
@@ -423,6 +426,8 @@ public class ClassifierProvider extends ContentProvider {
         names.addAll(renames(p.getString(Config.KEY_FOLDER_NAMES, "")).values());
         // Folders the AI made are automatic too.
         names.addAll(com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_MAP, "")).values());
+        // So are folders made by rules: once the rule is deleted, they are emptied like any stale folder.
+        names.addAll(lines(p.getString(Config.KEY_RULE_FOLDERS, "")));
         names.remove(Classifier.LOOSE);
         for (String c : new String[]{"빨강", "주황", "노랑", "초록", "청록", "파랑", "보라", "분홍", "흑백", "흰색", "회색", "검정",
                 "단색", "투톤", "다채로움"}) {
@@ -495,6 +500,15 @@ public class ClassifierProvider extends ContentProvider {
             }
         } catch (Exception ignored) {
         }
+    }
+
+    /** Adds the folders the current rules name to the remembered list (written only when it grows). */
+    private static void rememberRuleFolders(SharedPreferences p, Classifier rules) {
+        Set<String> known = lines(p.getString(Config.KEY_RULE_FOLDERS, ""));
+        if (known.containsAll(rules.folderNames())) return;
+        Set<String> all = new java.util.TreeSet<>(known);
+        all.addAll(rules.folderNames());
+        p.edit().putString(Config.KEY_RULE_FOLDERS, String.join("\n", all)).apply();
     }
 
     static Set<String> lines(String text) {

@@ -273,7 +273,7 @@ fun AiSheet(model: AppModel, onClose: () -> Unit) {
                 err?.let { ErrorText(it) }
                 SheetActions("전부 바꾸기", {
                     if (err == null) {
-                        model.edit({ putString(Config.KEY_RULES, edited.trim()) })
+                        model.saveRules(edited)
                         model.toast("규칙을 바꿨어요. 미리보기로 확인해 보세요")
                         onClose()
                     }
@@ -329,7 +329,7 @@ fun SignalsSheet(model: AppModel, onClose: () -> Unit) {
                     title = title, summary = summary,
                 )
             }
-            IntSlider(model, Config.KEY_THRESHOLD, Config.DEFAULT_THRESHOLD, 50..99, "기준 확신도", "%")
+            IntSlider(model, Config.KEY_THRESHOLD, Config.DEFAULT_THRESHOLD, 30..99, "최소 확신도", "%")
             Spacer(Modifier.height(16.dp))
         }
     }
@@ -369,7 +369,7 @@ fun RulesTextSheet(model: AppModel, onClose: () -> Unit) {
             "!폴더안정렬 · !앱정렬 · !폴더정렬 · !배치 · !최소앱 · !폴더색 아이콘|카테고리|기본",
         model.prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!,
         { Classifier.validate(it) },
-        { model.edit({ putString(Config.KEY_RULES, it.trim()) }) },
+        { model.saveRules(it) },
         onClose,
     )
 }
@@ -525,7 +525,7 @@ fun RulesSheet(model: AppModel, onText: () -> Unit, onClose: () -> Unit) {
     }
 
     fun save() {
-        model.edit({ putString(Config.KEY_RULES, (others + items.map { it.toLine() }).joinToString("\n").trim()) })
+        model.saveRules((others + items.map { it.toLine() }).joinToString("\n"))
     }
 
     WindowBottomSheet(show = true, title = "폴더 규칙", onDismissRequest = onClose) {
@@ -701,7 +701,7 @@ private fun RuleSetsSheet(model: AppModel, onApplied: () -> Unit, onClose: () ->
                 val next = if (isTemplate) {
                     (text.lines() + current.lines().filter { it.trim().startsWith("!") }).filter { it.isNotBlank() }.joinToString("\n")
                 } else text
-                model.edit({ putString(Config.KEY_RULES, next) })
+                model.saveRules(next)
                 confirm = null
                 onApplied()
                 onClose()

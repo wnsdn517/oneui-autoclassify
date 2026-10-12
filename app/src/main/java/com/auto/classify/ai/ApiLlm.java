@@ -95,7 +95,8 @@ public final class ApiLlm implements Llm {
         String key = keyFor(p, p.getString(KEY_SLOT, GEMINI.equals(provider) ? "gemini" : "custom"));
         if (key == null || key.trim().isEmpty()) return null;
         ApiLlm llm = new ApiLlm(provider, key, p.getString(KEY_MODEL, ""), p.getString(KEY_BASE, ""), p);
-        llm.web = p.getBoolean(KEY_WEB, false) && supportsWeb(provider, p.getString(KEY_BASE, ""));
+        llm.web = p.getBoolean(KEY_WEB, false) && supportsWeb(provider, p.getString(KEY_BASE, ""))
+                && (!GEMINI.equals(provider) || llm.model.isEmpty() || geminiWeb(llm.model));
         return llm;
     }
 
@@ -116,7 +117,8 @@ public final class ApiLlm implements Llm {
     /** @param onText when set, the answer is streamed and this gets the text so far after each piece */
     public String generate(String system, String user, boolean json, java.util.function.Consumer<String> onText) throws Exception {
         if (key.isEmpty()) throw new IllegalStateException("API 키가 없어요");
-        if (web && tools == null) system += "\nYou may search the web to identify apps you don't recognise; the answer format stays the same.";
+        webFailed = null;
+        if (web && tools == null) system += WEB_HINT;
         if (tools != null) {
             system += "\nYou can call tools to check facts instead of guessing: the real apps-screen layout, what is inside a folder, "
                     + "how long each app was used, details of an app" + (web ? ", and web_search" : "") + ". "
@@ -129,6 +131,10 @@ public final class ApiLlm implements Llm {
         if (tools != null) return once(sys, user, json, onText);
         return retrying(() -> once(sys, user, json, onText));
     }
+
+    private static final String WEB_HINT = "\nYou may search the web to identify apps you don't recognise; the answer format stays the same.";
+    /** Set when the last request had to go without the web search it asked for. */
+    public String webFailed;
 
     private static long lastRequestAt;
 
@@ -199,6 +205,12 @@ public final class ApiLlm implements Llm {
         try {
             return onText == null ? call(system, user, json) : stream(system, user, json, onText);
         } catch (Http.HttpError e) {
+            // The service refused web search (model without search, no credit for it): answer without it.
+            if (web && (e.code == 400 || e.code == 402 || e.code == 403)) {
+                web = false;
+                webFailed = "웹 검색을 쓸 수 없어 검색 없이 처리했어요 (" + e.code + ")";
+                return once(system.replace(WEB_HINT, ""), user, json, onText);
+            }
             // A retired or mistyped model name: switch to one the service lists, once.
             if (e.code != 404) throw e;
             String before = model;
@@ -320,6 +332,7 @@ public final class ApiLlm implements Llm {
         if (!supportsWeb(provider, base)) throw new IllegalStateException("이 서비스는 웹 검색을 지원하지 않아요");
         ApiLlm s = new ApiLlm(provider, key, model, base, null);
         s.web = true;
+        s.onSearch = onSearch;
         return s.generate("Search the web and answer briefly and factually in Korean; key facts only.", query);
     }
 
@@ -350,13 +363,7 @@ public final class ApiLlm implements Llm {
                                 lastOut = usage.optInt("candidatesTokenCount") + usage.optInt("thoughtsTokenCount");
                             }
                             JSONArray cands = o.optJSONArray("candidates");
-                            JSONObject grounding = cands == null || cands.length() == 0 ? null : cands.getJSONObject(0).optJSONObject("groundingMetadata");
-                            JSONArray queries = grounding == null ? null : grounding.optJSONArray("webSearchQueries");
-                            if (queries != null && queries.length() > 0 && onSearch != null) {
-                                List<String> q = new ArrayList<>();
-                                for (int i = 0; i < queries.length(); i++) q.add(queries.optString(i));
-                                onSearch.accept(String.join(", ", q));
-                            }
+                            reportSearches(cands == null || cands.length() == 0 ? null : cands.getJSONObject(0).optJSONObject("groundingMetadata"));
                             JSONObject content = cands == null || cands.length() == 0 ? null : cands.getJSONObject(0).optJSONObject("content");
                             JSONArray parts = content == null ? null : content.optJSONArray("parts");
                             for (int i = 0; parts != null && i < parts.length(); i++) {
@@ -396,6 +403,15 @@ public final class ApiLlm implements Llm {
         return sb.toString();
     }
 
+    /** Passes the queries Gemini searched (grounding metadata) to onSearch. */
+    private void reportSearches(JSONObject grounding) {
+        JSONArray queries = grounding == null ? null : grounding.optJSONArray("webSearchQueries");
+        if (queries == null || queries.length() == 0 || onSearch == null) return;
+        List<String> q = new ArrayList<>();
+        for (int i = 0; i < queries.length(); i++) q.add(queries.optString(i));
+        onSearch.accept(String.join(", ", q));
+    }
+
     private void pickModel() throws Exception {
         String best = bestModel(listModels());
         if (best == null) throw new IllegalStateException("쓸 수 있는 모델이 없어요");
@@ -416,6 +432,7 @@ public final class ApiLlm implements Llm {
             }
             JSONArray cands = out.optJSONArray("candidates");
             if (cands == null || cands.length() == 0) throw new IllegalStateException("빈 응답 (안전 필터 등)");
+            reportSearches(cands.getJSONObject(0).optJSONObject("groundingMetadata"));
             JSONObject content = cands.getJSONObject(0).optJSONObject("content");
             JSONArray parts = content == null ? null : content.optJSONArray("parts");
             StringBuilder sb = new StringBuilder();
@@ -460,7 +477,7 @@ public final class ApiLlm implements Llm {
                     String name = m.optString("name").replaceFirst("^models/", "");
                     if (!name.startsWith("gemini") || !isTextModel(name)) continue;
                     out.add(name);
-                    notes.put(name, geminiWeb(name) ? "검색 가능" : "검색 불가");
+                    if (geminiWeb(name)) notes.put(name, NOTE_SEARCH);
                 }
                 page = o.optString("nextPageToken", null);
                 if (page != null && page.isEmpty()) page = null;
@@ -480,6 +497,10 @@ public final class ApiLlm implements Llm {
                 boolean free = id.endsWith(":free")
                         || pricing != null && "0".equals(pricing.optString("prompt")) && "0".equals(pricing.optString("completion"));
                 if (free) notes.put(id, "무료");
+                // Models with the service's own search; the others would need OpenRouter's paid web plugin.
+                if (pricing != null && pricing.has("web_search") && !"0".equals(pricing.optString("web_search"))) {
+                    notes.put(id, free ? "무료 " + NOTE_SEARCH : NOTE_SEARCH);
+                }
             }
         }
         return out;
@@ -497,8 +518,12 @@ public final class ApiLlm implements Llm {
 
     private static final Pattern GEMINI_NAME_VERSION = Pattern.compile("^gemini-(\\d+(?:\\.\\d+)?)");
 
-    /** Gemini 2.x and later (and the -latest aliases) can ground answers with Google Search. */
-    static boolean geminiWeb(String id) {
+    /** Marks a model that can search the web, in notes; the picker shows it as an icon. */
+    public static final String NOTE_SEARCH = "검색";
+
+    /** Gemini 2.x and later (and the -latest aliases) can ground answers with Google Search; 2.0 Flash-Lite can't. */
+    public static boolean geminiWeb(String id) {
+        if (id.contains("2.0-flash-lite")) return false;
         if (id.endsWith("-latest")) return true;
         Matcher v = GEMINI_NAME_VERSION.matcher(id);
         return v.find() && Double.parseDouble(v.group(1)) >= 2.0;

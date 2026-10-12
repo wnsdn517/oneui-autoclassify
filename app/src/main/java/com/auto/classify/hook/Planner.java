@@ -58,6 +58,8 @@ final class Planner {
         boolean cleanStale = true;
         /** The AI was asked about a new app and didn't answer, so its place is unknown, not "unclassified". */
         boolean aiMissed;
+        /** AI mode: the AI already applied the minimum folder size, so every folder it named is made. */
+        boolean aiMode;
         /** Folder titles in the order the AI wants them (AI mode); empty = no opinion. */
         final List<String> folderOrder = new ArrayList<>();
         /** Config.UNCLASSIFIED_* and its folder name / page. */
@@ -519,6 +521,7 @@ final class Planner {
         currentTargets = t;
         currentRuleColors = plan.ruleColors;
         if (t.directives.minApps > 0) minApps = t.directives.minApps;
+        if (t.aiMode) minApps = 1;
         Map<String, List<Move>> wanted = new LinkedHashMap<>();
         for (Row[] a : apps) consider(t.byPkg, a[0], a[1], wanted);
 

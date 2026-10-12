@@ -58,6 +58,8 @@ public final class Config {
     /** Minimum combined confidence (percent) before an app is moved. */
     public static final String KEY_THRESHOLD = "threshold";
     public static final int DEFAULT_THRESHOLD = 80;
+    /** Folder names rules have ever sent apps to (one per line), so they are cleaned up once no rule uses them. */
+    public static final String KEY_RULE_FOLDERS = "rule_folders";
     /** "기본이름=내이름" lines renaming the default category folders. */
     public static final String KEY_FOLDER_NAMES = "folder_names";
     /** ColorEngine.Method name. */

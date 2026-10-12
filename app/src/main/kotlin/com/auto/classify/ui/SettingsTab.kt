@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import top.yukonga.miuix.kmp.icon.extended.Search
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -200,11 +202,22 @@ private fun AiConnection(model: AppModel) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
     )
     if (models.isNotEmpty()) {
-        WindowDropdownPreference(
-            items = models.map { m -> notes[m]?.let { "$m · $it" } ?: m },
+        // Models that can search the web carry a small search icon; the rest show nothing.
+        val searchIcon: @Composable (Modifier) -> Unit = { m ->
+            top.yukonga.miuix.kmp.basic.Icon(top.yukonga.miuix.kmp.icon.MiuixIcons.Search, "웹 검색 가능",
+                m.padding(end = 8.dp).size(18.dp), tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        }
+        top.yukonga.miuix.kmp.preference.WindowSpinnerPreference(
+            items = models.map { m ->
+                val note = notes[m].orEmpty()
+                top.yukonga.miuix.kmp.basic.DropdownItem(
+                    text = m,
+                    icon = if (note.contains(ApiLlm.NOTE_SEARCH)) searchIcon else null,
+                    summary = note.replace(ApiLlm.NOTE_SEARCH, "").trim().ifEmpty { null },
+                )
+            },
             selectedIndex = models.indexOf(modelName).coerceAtLeast(0),
             title = "모델",
-            
             onSelectedIndexChange = { modelName = models[it]; save() },
         )
     } else {
@@ -212,21 +225,19 @@ private fun AiConnection(model: AppModel) {
     }
     if (ApiLlm.supportsWeb(provider, base)) {
         var web by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_WEB, false)) }
+        val canSearch = provider != ApiLlm.GEMINI || modelName.isBlank() || ApiLlm.geminiWeb(modelName)
         SwitchPreference(
-            title = "웹 검색 허용",
-            summary = "모르는 앱을 검색해서 분류해요 (요청이 느려지고 토큰·요금이 더 들 수 있어요)",
-            checked = web,
+            title = "웹 검색",
+            summary = if (canSearch) "모르는 앱을 찾아보고 분류 (느려지고 토큰이 더 들어요)" else "이 모델은 검색을 못 해요",
+            checked = web && canSearch,
             onCheckedChange = { web = it; sp.edit().putBoolean(ApiLlm.KEY_WEB, it).apply() },
+            enabled = canSearch,
         )
-    } else {
-        Text("이 서비스는 웹 검색을 지원하지 않아요 (Gemini, OpenRouter만)",
-            Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
     var tools by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_TOOLS, true)) }
     SwitchPreference(
-        title = "AI 도구 사용",
-        summary = "AI가 현재 구성·폴더 내용·앱 사용량을 직접 확인하며 판단해요 (요청이 느려지고 토큰이 더 들어요)",
+        title = "AI 도구",
+        summary = "현재 배치·폴더·사용량을 직접 확인 (느려지고 토큰이 더 들어요)",
         checked = tools,
         onCheckedChange = { tools = it; sp.edit().putBoolean(ApiLlm.KEY_TOOLS, it).apply() },
     )
@@ -241,7 +252,8 @@ private fun AiConnection(model: AppModel) {
     }
     ArrowPreference(
         title = "앱 사용 기록 접근",
-        summary = if (granted) "허용됨 · AI가 앱 사용량을 볼 수 있어요" else "허용 안 됨 · 눌러서 설정을 열고 AutoClassify를 켜 주세요",
+        summary = if (granted) "허용됨" else "허용 안 됨 · 눌러서 켜기",
+        enabled = tools,
         onClick = {
             context.startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
                 .setData(Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

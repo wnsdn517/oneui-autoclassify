@@ -117,9 +117,9 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                         else -> {
-                            PrefSwitch(model, Config.KEY_DETAILED, false, "자세히 나누기", "소셜·메신저, 음악·영상 등을 따로")
-                            ArrowPreference("분류 근거", summary = signalsSummary(model), onClick = { sheet = Sheet.SIGNALS })
-                            ArrowPreference("폴더 이름 바꾸기", onClick = { sheet = Sheet.FOLDER_NAMES })
+                            PrefSwitch(model, Config.KEY_DETAILED, false, "세분화", "소셜·메신저, 음악·영상 등을 따로")
+                            ArrowPreference("분류 기준", summary = signalsSummary(model), onClick = { sheet = Sheet.SIGNALS })
+                            ArrowPreference("폴더 이름", onClick = { sheet = Sheet.FOLDER_NAMES })
                         }
                     }
                 }
@@ -129,8 +129,9 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
             item { SmallTitle("내 규칙") }
             item {
                 Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference("폴더 규칙", summary = folderRuleSummary(rules, mode), onClick = { sheet = Sheet.RULES })
-                    ArrowPreference("말로 규칙 만들기", onClick = { sheet = Sheet.AI })
+                    ArrowPreference("규칙", summary = folderRuleSummary(rules, mode), onClick = { sheet = Sheet.RULES })
+                    // AI mode uses only hand-picked apps and exclusions, so rules made from words would do nothing there.
+                    if (mode != Config.MODE_AI) ArrowPreference("AI로 규칙 만들기", onClick = { sheet = Sheet.AI })
                 }
             }
 
@@ -141,9 +142,11 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                     val appSorts = listOf(Directives.KEEP, Directives.NAME, Directives.COLOR, Directives.INSTALLED)
                     DirectiveDropdown(model, rules, Directives.D_INSIDE, "폴더 안 앱", appSorts, directives.insideSort)
                     DirectiveDropdown(model, rules, Directives.D_LOOSE, "폴더 밖 앱", appSorts, directives.looseSort)
+                    val aiOrder = mode == Config.MODE_AI && p.getString(Config.KEY_AI_ORDER, "[]")!!.trim().let { it != "[]" && it.isNotEmpty() }
                     DirectiveDropdown(model, rules, Directives.D_FOLDERS, "폴더 순서",
-                        listOf(Directives.KEEP, Directives.NAME, Directives.COLOR, Directives.SIZE), directives.folderSort)
-                    DirectiveDropdown(model, rules, Directives.D_PLACEMENT, "폴더와 앱",
+                        listOf(Directives.KEEP, Directives.NAME, Directives.COLOR, Directives.SIZE), directives.folderSort,
+                        enabled = !aiOrder, summary = if (aiOrder) "AI가 정한 순서" else null)
+                    DirectiveDropdown(model, rules, Directives.D_PLACEMENT, "배치",
                         listOf(Directives.KEEP, Directives.FOLDERS_FIRST, Directives.APPS_FIRST), directives.placement)
                     DirectiveDropdown(model, rules, Directives.D_FOLDER_COLOR, "폴더 색",
                         listOf(Directives.KEEP, Directives.ICON, Directives.CATEGORY, Directives.RESET), directives.folderColor)
@@ -151,27 +154,28 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
             }
 
             // ---- 4. new installs
-            item { SmallTitle("새 앱을 설치하면") }
+            item { SmallTitle("새 앱") }
             item {
                 Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    PrefSwitch(model, Config.KEY_ENABLED, true, "바로 분류", null,
+                    PrefSwitch(model, Config.KEY_ENABLED, true, "설치하면 바로 정리", null,
                         enabled = !model.disabledFeatures().contains(Diagnosis.F_LIVE))
+                    val live = p.getBoolean(Config.KEY_ENABLED, true)
                     if (MODES[modeIdx] == Config.MODE_AI) {
-                        PrefSwitch(model, Config.KEY_AI_INSTALL, false, "AI로 분류하기",
+                        PrefSwitch(model, Config.KEY_AI_INSTALL, false, "AI에게 물어보기",
                             if (hasKey) null else "AI 연결 필요",
-                            enabled = hasKey)
-                        if (p.getBoolean(Config.KEY_AI_INSTALL, false)) {
-                            IntSlider(model, Config.KEY_AI_COOLDOWN, 30, 0..300, "쿨다운", "초")
-                            IntSlider(model, Config.KEY_AI_DAILY, 30, 1..100, "하루 최대", "번")
+                            enabled = hasKey && live)
+                        if (live && hasKey && p.getBoolean(Config.KEY_AI_INSTALL, false)) {
+                            IntSlider(model, Config.KEY_AI_COOLDOWN, 30, 0..300, "요청 간격", "초")
+                            IntSlider(model, Config.KEY_AI_DAILY, 30, 1..100, "하루 최대 요청", "번")
                         }
                     }
                     val modes = listOf(Config.UNCLASSIFIED_FREE, Config.UNCLASSIFIED_FOLDER, Config.UNCLASSIFIED_PAGE, Config.UNCLASSIFIED_KEEP)
-                    val names = listOf("규칙 없는 페이지로", "한 폴더에 모으기", "정한 페이지로", "그대로 두기")
+                    val names = listOf("폴더 밖에", "한 폴더에", "정한 페이지에", "그대로")
                     val cur = modes.indexOf(p.getString(Config.KEY_UNCLASSIFIED, Config.UNCLASSIFIED_FREE)).coerceAtLeast(0)
                     WindowDropdownPreference(
                         items = names,
                         selectedIndex = cur,
-                        title = "맞는 폴더가 없으면",
+                        title = "맞는 폴더 없는 앱",
                         onSelectedIndexChange = { model.edit({ putString(Config.KEY_UNCLASSIFIED, modes[it]) }) },
                     )
                     if (modes[cur] == Config.UNCLASSIFIED_FOLDER) {
@@ -186,7 +190,7 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                     if (modes[cur] == Config.UNCLASSIFIED_PAGE) {
                         IntSlider(model, Config.KEY_UNCLASSIFIED_PAGE, 1, 1..10, "페이지", "")
                     }
-                    PrefSwitch(model, Config.KEY_SCREEN_OFF_TIDY, true, "페이지 위치도 맞추기", null)
+                    PrefSwitch(model, Config.KEY_SCREEN_OFF_TIDY, true, "화면 꺼지면 페이지 정리", null, enabled = live)
                 }
             }
 
@@ -196,10 +200,12 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                     ArrowPreference("고급",
                         onClick = { advanced = !advanced })
                     if (advanced) {
-                        IntSlider(model, Config.KEY_MIN_APPS, 2, 1..10, "새 폴더 최소 앱 수 (1이면 앱 1개짜리 폴더도 유지)", "개")
-                        PrefSwitch(model, Config.KEY_CREATE_FOLDERS, true, "폴더가 없으면 새로 만들기", null)
-                        PrefSwitch(model, Config.KEY_SKIP_MOVED, false, "손으로 옮긴 앱은 건너뛰기", null)
-                        PrefSwitch(model, Config.KEY_CLEAN_STALE, true, "예전 자동 폴더 정리", null)
+                        PrefSwitch(model, Config.KEY_CREATE_FOLDERS, true, "새 폴더 만들기", null)
+                        if (p.getBoolean(Config.KEY_CREATE_FOLDERS, true)) {
+                            IntSlider(model, Config.KEY_MIN_APPS, 2, 1..10, "새 폴더 최소 앱 수", "개")
+                        }
+                        PrefSwitch(model, Config.KEY_SKIP_MOVED, false, "직접 옮긴 앱 건드리지 않기", null)
+                        PrefSwitch(model, Config.KEY_CLEAN_STALE, true, "안 쓰는 폴더 비우기", null)
                     }
                 }
             }
@@ -244,7 +250,7 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
     val memoCount = com.auto.classify.ai.AiMemo.load(p).size
     ArrowPreference(
         title = "AI 메모",
-        summary = if (memoCount == 0) "AI가 기억해 둘 선호나 사실을 적어요 (AI도 스스로 저장해요)" else "${memoCount}개 저장됨 · 눌러서 보기·수정",
+        summary = if (memoCount == 0) "없음" else "${memoCount}개",
         onClick = { memoOpen = true },
     )
     if (memoOpen) {
@@ -379,12 +385,15 @@ fun IntSlider(model: AppModel, key: String, def: Int, range: IntRange, title: St
 @Composable
 private fun DirectiveDropdown(
     model: AppModel, rules: String, key: String, title: String, values: List<String>, current: String,
+    enabled: Boolean = true, summary: String? = null,
 ) {
     val idx = values.indexOf(current).coerceAtLeast(0)
     WindowDropdownPreference(
         items = values.map { if (it == Directives.KEEP) "그대로" else it + "순".takeIf { _ -> it in SORT_WORDS }.orEmpty() },
         selectedIndex = idx,
         title = title,
+        summary = summary,
+        enabled = enabled,
         onSelectedIndexChange = { i ->
             model.edit({ putString(Config.KEY_RULES, setDirective(rules, key, values[i])) })
         },
@@ -416,7 +425,7 @@ fun basis(model: AppModel): String {
 private fun folderRuleSummary(rules: String, mode: String?): String {
     val n = rules.split("\n").count { val t = it.trim(); t.isNotEmpty() && !t.startsWith("#") && !t.startsWith("!") }
     if (n == 0) return "없음"
-    return "${n}개"
+    return if (mode == Config.MODE_AI) "${n}개 · AI 모드는 앱 지정·제외만 적용" else "${n}개"
 }
 
 private fun signalsSummary(model: AppModel): String {

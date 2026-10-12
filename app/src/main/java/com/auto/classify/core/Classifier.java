@@ -40,7 +40,7 @@ public final class Classifier {
         public final int page;
         public final Integer color;
 
-        Hit(String folder, int page, Integer color) {
+        public Hit(String folder, int page, Integer color) {
             this.folder = folder;
             this.page = page;
             this.color = color;
@@ -249,6 +249,15 @@ public final class Classifier {
 
     public int size() {
         return rules.size();
+    }
+
+    /** Folder names the rules send apps to (not exclusions or "out of folders"). */
+    public java.util.Set<String> folderNames() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (Rule r : rules) {
+            if (!EXCLUDE.equals(r.folder) && !LOOSE.equals(r.folder) && !r.folder.isEmpty()) out.add(r.folder);
+        }
+        return out;
     }
 
     private final java.util.Map<String, java.util.regex.Pattern> patterns = new java.util.HashMap<>();

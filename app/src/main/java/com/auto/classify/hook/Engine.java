@@ -664,6 +664,7 @@ public final class Engine {
             if (autoNames != null) t.autoNames.addAll(java.util.Arrays.asList(autoNames));
             t.cleanStale = settings.cleanStale;
             t.aiMissed = r.getBoolean("aiMissed");
+            t.aiMode = r.getBoolean("aiMode");
             String[] folderOrder = r.getStringArray("folderOrder");
             if (folderOrder != null) t.folderOrder.addAll(Arrays.asList(folderOrder));
             t.unclassified = settings.unclassified;

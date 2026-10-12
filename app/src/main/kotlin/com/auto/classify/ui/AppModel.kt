@@ -66,6 +66,25 @@ class AppModel(private val context: Context) {
     }
 
     /**
+     * Saves the active mode's rules. Rule lines the user removed are dropped from every mode's
+     * stored copy too, so a deleted rule doesn't come back on the next mode switch.
+     */
+    fun saveRules(text: String) {
+        val ruleLines = { s: String -> s.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("!") && !it.startsWith("#") } }
+        val kept = ruleLines(text).toSet()
+        val removed = ruleLines(prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!).filter { it !in kept }.toSet()
+        edit({
+            putString(Config.KEY_RULES, text.trim())
+            if (removed.isNotEmpty()) {
+                for (m in listOf(Config.MODE_CATEGORY, Config.MODE_COLOR, Config.MODE_AI, Config.MODE_RULES)) {
+                    val stored = prefs.getString(RULES_PREFIX + m, null) ?: continue
+                    putString(RULES_PREFIX + m, stored.lines().filterNot { it.trim() in removed }.joinToString("\n"))
+                }
+            }
+        })
+    }
+
+    /**
      * One-time cleanup of the single shared rule list: color rules go to the color mode, the
      * rest to the category mode, rules that only repeat the automatic result ("게임|cat:게임")
      * are dropped, and app pins stay in every mode.
@@ -378,7 +397,8 @@ class AppModel(private val context: Context) {
 
     private fun remember(request: String, text: String) {
         if (text.isBlank()) return
-        val full = if (toolsUsed.isEmpty()) text else text.trim() + "\n(사용한 도구: " + toolsUsed.joinToString(", ") + ")"
+        var full = if (toolsUsed.isEmpty()) text else text.trim() + "\n(사용한 도구: " + toolsUsed.joinToString(", ") + ")"
+        currentLlm?.webFailed?.let { full = full.trim() + "\n($it)" }
         toolsUsed.clear()
         aiAnswer = full
         aiHistory = AiHistory.add(prefs, AiHistory.Entry(System.currentTimeMillis(), request.trim(), full.trim()))
@@ -412,8 +432,10 @@ class AppModel(private val context: Context) {
         }
         edit({ putString(Config.KEY_AI_REQUEST, instruction) }, reload = false)
         runAi(instruction) {
-                com.auto.classify.ai.AiOrganizer.organize(context, llm, instruction,
-                    prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
+            // Apps the answer doesn't mention keep their current place, so a request about one folder leaves the rest alone.
+            val now = placesOf(fetchLayout())
+            com.auto.classify.ai.AiOrganizer.organize(context, llm, instruction,
+                prefs.getInt(Config.KEY_MIN_APPS, 2), progress(), now)
         }
     }
 
@@ -652,7 +674,11 @@ class AppModel(private val context: Context) {
     private var appendOnSuccess: String? = null
 
     /** The user's AI service; retries show up as the current stage. */
+    /** The service of the current request, for what it reports afterwards (search fallback). */
+    private var currentLlm: com.auto.classify.ai.ApiLlm? = null
+
     private fun aiLlm() = com.auto.classify.ai.ApiLlm.fromPrefs(context)?.also { llm ->
+        currentLlm = llm
         aiSearch = null
         aiWeb = llm.web
         llm.onRetry = java.util.function.Consumer { n -> main.post { aiStage = "다시 시도 중 ($n)" } }
@@ -766,6 +792,25 @@ class AppModel(private val context: Context) {
         const val RULES_PREFIX = "rules_"
         private const val RULES_SPLIT = "rules_split_v1"
         val FOLDER_NAME = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"")
+    }
+
+    /** pkg -> folder title it sits in now (Classifier.LOOSE when outside folders); null when the layout is unknown. */
+    private fun placesOf(layout: JSONObject?): Map<String, String>? {
+        val pages = layout?.optJSONArray("pages") ?: return null
+        val out = LinkedHashMap<String, String>()
+        for (p in 0 until pages.length()) {
+            val items = pages.optJSONArray(p) ?: continue
+            for (i in 0 until items.length()) {
+                val it = items.optJSONObject(i) ?: continue
+                if (it.optString("type") == "folder") {
+                    val apps = it.optJSONArray("apps") ?: continue
+                    val title = it.optString("title").trim()
+                    for (k in 0 until apps.length()) apps.optJSONObject(k)?.optString("pkg")?.takeIf { s -> s.isNotEmpty() }
+                        ?.let { pkg -> out.putIfAbsent(pkg, title.ifEmpty { Classifier.LOOSE }) }
+                } else it.optString("pkg").takeIf { s -> s.isNotEmpty() }?.let { pkg -> out.putIfAbsent(pkg, Classifier.LOOSE) }
+            }
+        }
+        return out
     }
 
     private fun folderTitles(layoutJson: String): List<String> = runCatching {
