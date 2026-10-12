@@ -70,7 +70,7 @@ final class Http {
             case 402:
                 throw new HttpError(code, "결제가 필요함(402)");
             case 429:
-                throw new HttpError(code, "사용량 한도 초과(429) · 잠시 후 다시 시도하세요");
+                throw rateLimited(text);
             default:
                 if (code >= 500) throw new HttpError(code, "서버 오류(" + code + ")");
                 throw new HttpError(code, "요청 거부(" + code + ")");
@@ -104,7 +104,7 @@ final class Http {
             case 402:
                 throw new HttpError(code, "결제가 필요함(402)");
             case 429:
-                throw new HttpError(code, "사용량 한도 초과(429) · 잠시 후 다시 시도하세요");
+                throw rateLimited(text);
             default:
                 if (code >= 500) throw new HttpError(code, "서버 오류(" + code + ")");
                 if (code >= 400) throw new HttpError(code, "요청 거부(" + code + ")");
@@ -112,9 +112,51 @@ final class Http {
         return text;
     }
 
+    /**
+     * A 429 with what Google says about it: how long to wait (RetryInfo.retryDelay) and which quota
+     * ran out (QuotaFailure.quotaId; "PerDay" = the daily limit, which waiting a minute won't fix).
+     */
+    static HttpError rateLimited(String text) {
+        long retry = -1;
+        boolean daily = false;
+        String quota = "";
+        try {
+            JSONObject err = new JSONObject(text).optJSONObject("error");
+            JSONArray details = err == null ? null : err.optJSONArray("details");
+            for (int i = 0; details != null && i < details.length(); i++) {
+                JSONObject d = details.optJSONObject(i);
+                if (d == null) continue;
+                String type = d.optString("@type");
+                if (type.endsWith("RetryInfo")) {
+                    String delay = d.optString("retryDelay").replace("s", "").trim();
+                    if (!delay.isEmpty()) retry = (long) (Double.parseDouble(delay) * 1000);
+                }
+                JSONArray violations = d.optJSONArray("violations");
+                for (int j = 0; violations != null && j < violations.length(); j++) {
+                    JSONObject v = violations.optJSONObject(j);
+                    String id = v == null ? "" : v.optString("quotaId");
+                    if (!id.isEmpty()) quota = id;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (quota.contains("PerDay") || text != null && text.contains("PerDay")) daily = true;
+        String msg;
+        if (daily) msg = "오늘 무료 사용량(일일 한도)을 모두 썼어요 · 한국 시간 오후 4~5시쯤 초기화돼요";
+        else msg = "사용량 한도 초과(429)" + (retry > 0 ? " · " + Math.round(retry / 1000.0) + "초 뒤 다시 시도 가능" : " · 잠시 후 다시 시도하세요");
+        if (!quota.isEmpty()) msg += " [" + quota + "]";
+        HttpError e = new HttpError(429, msg);
+        e.retryAfterMs = retry;
+        e.daily = daily;
+        return e;
+    }
+
     /** An HTTP failure with its status code (404 = wrong model, used to pick another one). */
     static final class HttpError extends IllegalStateException {
         final int code;
+        /** From a 429: how long Google asked to wait (-1 = unknown) and whether the daily quota is gone. */
+        long retryAfterMs = -1;
+        boolean daily;
 
         HttpError(int code, String message) {
             super(message);

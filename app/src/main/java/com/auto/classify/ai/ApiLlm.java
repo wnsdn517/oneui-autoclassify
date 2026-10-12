@@ -52,7 +52,7 @@ public final class ApiLlm implements Llm {
     public Tools tools;
     /** Gets the name of each tool as the model calls it. */
     public java.util.function.Consumer<String> onTool;
-    private static final int MAX_TOOL_STEPS = 8;
+    private static final int MAX_TOOL_STEPS = 6;
     /** Notes shown beside models in the picker (search support, free), filled by listModels(). */
     public final java.util.Map<String, String> notes = new java.util.LinkedHashMap<>();
     /** On when the model may search the web; only set for services that support it. */
@@ -124,23 +124,62 @@ public final class ApiLlm implements Llm {
                     + "checking what a folder really holds) and to verify your plan, then give the final answer in the required format.";
         }
         if (model.isEmpty()) pickModel();
-        // Busy or flaky service (503, 500, 429, timeouts): wait and try again a few times.
-        long[] waits = {5000, 15000, 30000, 60000};
+        final String sys = system;
+        // A tool conversation retries each request on its own (a restart would repeat every earlier step).
+        if (tools != null) return once(sys, user, json, onText);
+        return retrying(() -> once(sys, user, json, onText));
+    }
+
+    private static long lastRequestAt;
+
+    /** Free tiers allow only a few requests per minute: keep a little space between requests. */
+    private void spaceOut() throws InterruptedException {
+        if (!GEMINI.equals(provider)) return;
+        long wait;
+        synchronized (ApiLlm.class) {
+            long now = System.currentTimeMillis();
+            long slot = Math.max(now, lastRequestAt + 2000);
+            lastRequestAt = slot;
+            wait = slot - now;
+        }
+        if (wait > 0) Thread.sleep(wait);
+    }
+
+    /**
+     * Runs one request, retrying only what Google says is temporary: 429 (after the delay it
+     * names; never when the daily quota is gone) and 5xx/network errors (growing delay with jitter).
+     */
+    private <T> T retrying(java.util.concurrent.Callable<T> call) throws Exception {
         for (int attempt = 0; ; attempt++) {
+            spaceOut();
             try {
-                return once(system, user, json, onText);
+                return call.call();
             } catch (Exception e) {
-                boolean transient_ = e instanceof java.io.IOException
-                        || e instanceof Http.HttpError && (((Http.HttpError) e).code >= 500 || ((Http.HttpError) e).code == 429);
-                if (!transient_ || attempt >= Math.min(waits.length, maxRetries)) throw e;
-                if (onRetry != null) onRetry.accept((attempt + 2) + "/" + (waits.length + 1));
-                Thread.sleep(waits[attempt]);
+                long wait = -1;
+                String why = "";
+                if (e instanceof Http.HttpError) {
+                    Http.HttpError h = (Http.HttpError) e;
+                    if (h.code == 429 && !h.daily) {
+                        wait = h.retryAfterMs > 0 ? h.retryAfterMs + 1000 : 15_000L * (attempt + 1);
+                        why = "한도 초과";
+                    } else if (h.code >= 500) {
+                        wait = 3000L << attempt;
+                        why = "서버 오류(" + h.code + ")";
+                    }
+                } else if (e instanceof java.io.IOException) {
+                    wait = 3000L << attempt;
+                    why = "연결 오류";
+                }
+                if (wait < 0 || attempt >= maxRetries || wait > 90_000) throw e;
+                wait += (long) (Math.random() * 1000);
+                if (onRetry != null) onRetry.accept((attempt + 2) + "/" + (maxRetries + 1) + " · " + why + ", " + Math.round(wait / 1000.0) + "초 뒤");
+                Thread.sleep(wait);
             }
         }
     }
 
     /** Retries after a busy/rate-limited answer; background jobs lower this so they never hang for minutes. */
-    public int maxRetries = 4;
+    public int maxRetries = 3;
 
     /** Called before each retry with "2/4", "3/4", … */
     public java.util.function.Consumer<String> onRetry;
@@ -194,8 +233,9 @@ public final class ApiLlm implements Llm {
                         .put("generationConfig", new JSONObject().put("temperature", 0.2));
                 // The last round has no tools, so the model has to answer.
                 if (step < MAX_TOOL_STEPS) body.put("tools", new JSONArray().put(new JSONObject().put("functionDeclarations", decls)));
-                JSONObject out = new JSONObject(Http.post(GEMINI_BASE + "/models/" + model + ":generateContent",
-                        body.toString(), "x-goog-api-key", key));
+                final String payload = body.toString();
+                JSONObject out = new JSONObject(retrying(() -> Http.post(GEMINI_BASE + "/models/" + model + ":generateContent",
+                        payload, "x-goog-api-key", key)));
                 JSONObject usage = out.optJSONObject("usageMetadata");
                 if (usage != null) {
                     lastIn += usage.optInt("promptTokenCount");
@@ -213,14 +253,19 @@ public final class ApiLlm implements Llm {
                     if (call != null) {
                         String name = call.optString("name");
                         String result = runTool(name, call.optJSONObject("args"));
-                        responses.put(new JSONObject().put("functionResponse", new JSONObject().put("name", name)
-                                .put("response", new JSONObject().put("result", result))));
+                        JSONObject reply = new JSONObject().put("name", name).put("response", new JSONObject().put("result", result));
+                        // Gemini 3 numbers each call and wants the result to carry the same id.
+                        if (call.has("id")) reply.put("id", call.optString("id"));
+                        responses.put(new JSONObject().put("functionResponse", reply));
                     } else if (!part.optBoolean("thought")) {
                         text.append(part.optString("text"));
                     }
                 }
                 if (responses.length() == 0) {
-                    if (text.length() == 0) throw new IllegalStateException("빈 응답");
+                    if (text.length() == 0) {
+                        String reason = cands.getJSONObject(0).optString("finishReason");
+                        throw new IllegalStateException("빈 응답" + (reason.isEmpty() ? "" : " (" + reason + ")"));
+                    }
                     return text.toString();
                 }
                 // Keep the model's turn exactly as it came (Gemini needs its thought signatures back).
@@ -240,7 +285,8 @@ public final class ApiLlm implements Llm {
         for (int step = 0; step <= MAX_TOOL_STEPS; step++) {
             JSONObject body = new JSONObject().put("model", model).put("messages", messages).put("temperature", 0.2);
             if (step < MAX_TOOL_STEPS) body.put("tools", defs).put("tool_choice", "auto");
-            String raw = Http.post(openAiBase() + "/chat/completions", body.toString(), "Authorization", "Bearer " + key);
+            final String payload = body.toString();
+            String raw = retrying(() -> Http.post(openAiBase() + "/chat/completions", payload, "Authorization", "Bearer " + key));
             JSONObject o = new JSONObject(raw);
             JSONObject usage = o.optJSONObject("usage");
             if (usage != null) {
