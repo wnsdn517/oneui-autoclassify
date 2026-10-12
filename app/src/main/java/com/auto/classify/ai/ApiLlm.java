@@ -110,12 +110,15 @@ public final class ApiLlm implements Llm {
             } catch (Exception e) {
                 boolean transient_ = e instanceof java.io.IOException
                         || e instanceof Http.HttpError && (((Http.HttpError) e).code >= 500 || ((Http.HttpError) e).code == 429);
-                if (!transient_ || attempt >= waits.length) throw e;
+                if (!transient_ || attempt >= Math.min(waits.length, maxRetries)) throw e;
                 if (onRetry != null) onRetry.accept((attempt + 2) + "/" + (waits.length + 1));
                 Thread.sleep(waits[attempt]);
             }
         }
     }
+
+    /** Retries after a busy/rate-limited answer; background jobs lower this so they never hang for minutes. */
+    public int maxRetries = 4;
 
     /** Called before each retry with "2/4", "3/4", … */
     public java.util.function.Consumer<String> onRetry;

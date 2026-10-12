@@ -189,6 +189,8 @@ public class ClassifierProvider extends ContentProvider {
         Classifier rules = new Classifier(applyRules ? p.getString(Config.KEY_RULES, Config.DEFAULT_RULES) : null);
 
         String mode = modeOverride != null ? modeOverride : p.getString(Config.KEY_MODE, Config.MODE_CATEGORY);
+        // True when the AI was asked about the new app and gave no answer (error, 429, limits).
+        boolean aiMissed = false;
         if (Config.MODE_COLOR.equals(mode)) {
             colorTargets(context, p, pkgs, excluded, targets, reasons);
             Map<String, String> colorRenames = renames(p.getString(Config.KEY_FOLDER_NAMES, ""));
@@ -225,6 +227,7 @@ public class ClassifierProvider extends ContentProvider {
                 if (folder == null && pk.equals(newPkg)) {
                     folder = askAi(context, p, ai, pk, labels[i]);
                     why = "AI 분류 (설치할 때)";
+                    if (folder == null && p.getBoolean(Config.KEY_AI_INSTALL, false)) aiMissed = true;
                 }
                 if (folder == null) continue;
                 targets[i] = folder;
@@ -264,6 +267,16 @@ public class ClassifierProvider extends ContentProvider {
         out.putStringArray("targets", targets);
         out.putStringArray("reasons", reasons);
         out.putIntArray("pages", pages);
+        out.putBoolean("aiMissed", aiMissed);
+        if (Config.MODE_AI.equals(mode)) {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(p.getString(Config.KEY_AI_ORDER, "[]"));
+                String[] order = new String[arr.length()];
+                for (int i = 0; i < order.length; i++) order[i] = arr.optString(i);
+                out.putStringArray("folderOrder", order);
+            } catch (org.json.JSONException ignored) {
+            }
+        }
         out.putIntArray("folderColors", colors);
         out.putStringArray("autoNames", autoNames(p));
         out.putStringArray("excludedPkgs", excluded.toArray(new String[0]));
@@ -321,6 +334,7 @@ public class ClassifierProvider extends ContentProvider {
             return null;
         }
         try {
+            llm.maxRetries = 1; // a new app shouldn't wait minutes on a busy service
             String folder = com.auto.classify.ai.AiOrganizer.classifyOne(context, llm, instruction, ai, pkg, label);
             if (folder != null) {
                 ai.put(pkg, folder);

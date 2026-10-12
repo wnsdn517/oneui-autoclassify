@@ -56,6 +56,10 @@ final class Planner {
         /** Folder names the module creates; such folders are cleaned up when they go stale. */
         final java.util.Set<String> autoNames = new java.util.HashSet<>();
         boolean cleanStale = true;
+        /** The AI was asked about a new app and didn't answer, so its place is unknown, not "unclassified". */
+        boolean aiMissed;
+        /** Folder titles in the order the AI wants them (AI mode); empty = no opinion. */
+        final List<String> folderOrder = new ArrayList<>();
         /** Config.UNCLASSIFIED_* and its folder name / page. */
         String unclassified = com.auto.classify.core.Config.UNCLASSIFIED_KEEP;
         String unclassifiedFolder = "기타";
@@ -141,6 +145,7 @@ final class Planner {
                     .put("created", new JSONArray(created))
                     .put("emptied", new JSONArray(emptied))
                     .put("pins", new JSONObject(pins))
+                    .put("loosePinned", loosePins.size())
                     .put("ruleColors", new JSONObject(ruleColors))
                     .put("changed", changed)
                     .put("before", before)
@@ -763,7 +768,12 @@ final class Planner {
 
         Comparator<Row> loose = appOrder(d.looseSort, t, byName);
         if (loose != null) as.sort(loose);
-        if (Directives.NAME.equals(d.folderSort)) fs.sort(byName);
+        if (!t.folderOrder.isEmpty()) {
+            // The AI's explicit order wins; folders it didn't name keep their relative order after the named ones.
+            Map<String, Integer> rank = new HashMap<>();
+            for (int i = 0; i < t.folderOrder.size(); i++) rank.putIfAbsent(t.folderOrder.get(i).trim(), i);
+            fs.sort(Comparator.comparingInt((Row r) -> rank.getOrDefault(r.title == null ? "" : r.title.trim(), Integer.MAX_VALUE)));
+        } else if (Directives.NAME.equals(d.folderSort)) fs.sort(byName);
         else if (Directives.COLOR.equals(d.folderSort)) {
             // A folder sorts by the median color of its apps (rainbow order, grays last).
             Map<Integer, Float> key = new HashMap<>();

@@ -41,6 +41,10 @@ public final class AiOrganizer {
         public final List<String> options = new ArrayList<>();
         /** The AI reply when the user asked a question or wanted an explanation. */
         public String answer = "";
+        /** Folder names in the order the apps screen should show them; empty = no opinion. */
+        public final List<String> folderOrder = new ArrayList<>();
+        /** True for a follow-up (refine): pages and order the answer omits are kept from before. */
+        public boolean refined;
         public String note = "";
         public int tokens;
     }
@@ -48,7 +52,7 @@ public final class AiOrganizer {
     private static final String RULES_OF_THE_ANSWER =
             "Answer with one JSON object only:\n"
                     + "{\"answer\":\"\", \"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
-                    + "\"loose_page\":0, \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"note\":\"짧은 한국어 요약\"}\n"
+                    + "\"loose_page\":0, \"folder_order\":[\"폴더 이름\"], \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"note\":\"짧은 한국어 요약\"}\n"
                     + "- page: 0 = anywhere. When the user asks to split things across pages or put folders/apps on a page, "
                     + "set page (1 = first page) on those folders, and loose_page for the loose apps. loose_page moves every app listed "
                     + "in loose, so to put certain apps on a page outside folders, list exactly those apps in loose and set loose_page. "
@@ -68,6 +72,9 @@ public final class AiOrganizer {
                     + "  !폴더정렬 이름|색상|앱수       (order of folders)\n"
                     + "  !배치 폴더먼저|앱먼저\n"
                     + "  !폴더색 아이콘|카테고리|기본\n"
+                    + "- folder_order: the folder names in the order they should appear on the apps screen, when the user cares about "
+                    + "the order of folders (e.g. most used first, alphabetical, a given sequence). Leave it empty to keep the current order. "
+                    + "Only folders listed in folders belong here.\n"
                     + "- answer: when the user asks a question or wants an explanation (\"왜 이렇게 했어?\", \"이 앱은 뭐야?\"), "
                     + "answer it here in Korean, short and concrete; folders may then stay as they are. Otherwise leave it empty.\n"
                     + "- note: one or two Korean sentences saying what you did, or why you changed nothing.\n"
@@ -219,12 +226,13 @@ public final class AiOrganizer {
      * "금융이랑 쇼핑 합쳐"): only what it mentions changes.
      */
     public static Plan refine(Context context, ApiLlm llm, String instruction, Map<String, String> assign,
-                              Map<String, Integer> pages, String request, int minApps, Progress progress) throws Exception {
+                              Map<String, Integer> pages, List<String> order, String request, int minApps, Progress progress) throws Exception {
         Apps a = apps(context, progress);
         if (progress != null) progress.on(STAGE_SEND, "");
         Plan current = new Plan();
         current.assign.putAll(assign);
         current.pages.putAll(pages);
+        current.folderOrder.addAll(order);
         String user = header(instruction, minApps, a) + "\n\nCurrent organization:\n" + describe(current, a)
                 + "\nFollow-up request:\n" + request.trim();
         try {
@@ -234,6 +242,15 @@ public final class AiOrganizer {
             AiUsage.record(context, AiUsage.KIND_ORGANIZE, "추가 요청: " + request.trim(), true, llm.lastIn, llm.lastOut);
             // An app the answer left out keeps its place.
             for (Map.Entry<String, String> e : assign.entrySet()) p.assign.putIfAbsent(e.getKey(), e.getValue());
+            // So do the pages and folder order it didn't mention (as long as the folder still exists).
+            java.util.Set<String> live = new java.util.HashSet<>(p.assign.values());
+            for (Map.Entry<String, Integer> e : pages.entrySet()) {
+                if (live.contains(e.getKey())) p.pages.putIfAbsent(e.getKey(), e.getValue());
+            }
+            if (p.folderOrder.isEmpty()) {
+                for (String n : order) if (live.contains(n)) p.folderOrder.add(n);
+            }
+            p.refined = true;
             return p;
         } catch (Exception e) {
             AiUsage.record(context, AiUsage.KIND_ORGANIZE, "추가 요청 실패: " + e.getMessage(), false, llm.lastIn, llm.lastOut);
@@ -364,6 +381,7 @@ public final class AiOrganizer {
             sb.append(e.getKey()).append(pg == null ? "" : " [page " + pg + "]").append(" (").append(e.getValue().size()).append("): ")
                     .append(String.join(", ", e.getValue())).append('\n');
         }
+        if (!plan.folderOrder.isEmpty()) sb.append("folder order: ").append(String.join(", ", plan.folderOrder)).append('\n');
         if (!plan.settings.isEmpty()) sb.append("settings: ").append(String.join(", ", plan.settings)).append('\n');
         return sb.toString();
     }
@@ -393,6 +411,11 @@ public final class AiOrganizer {
         for (int i = 0; options != null && i < options.length(); i++) {
             String n = AiOptions.normalize(options.optString(i));
             if (n != null) p.options.add(n);
+        }
+        JSONArray order = o.optJSONArray("folder_order");
+        for (int i = 0; order != null && i < order.length(); i++) {
+            String n = order.optString(i).trim();
+            if (!n.isEmpty() && !p.folderOrder.contains(n)) p.folderOrder.add(n);
         }
         p.answer = o.optString("answer").trim();
         p.note = o.optString("note");

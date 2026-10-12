@@ -162,7 +162,9 @@ class AppModel(private val context: Context) {
                     plan = runCatching { JSONObject(payload) }.getOrNull()
                     val off = pageMismatches(plan?.optJSONObject("after"))
                     if (off.isNotEmpty()) {
-                        remember("미리보기 점검", "AI가 정한 페이지와 다르게 배치된 항목이 있어요\n" + off.joinToString("\n") { "• $it" })
+                        val pinned = plan?.optInt("loosePinned") ?: 0
+                        remember("미리보기 점검", "AI가 정한 페이지와 다르게 배치된 항목이 있어요\n" + off.joinToString("\n") { "• $it" } +
+                            "\n(계획이 페이지를 지정한 폴더 밖 앱: ${pinned}개, 폴더 지정: ${plan?.optJSONObject("pins")?.length() ?: 0}개)")
                     }
                 }
                 Config.ACTION_BACKUPS -> {
@@ -390,7 +392,7 @@ class AppModel(private val context: Context) {
             .mapNotNull { (k, v) -> v.toIntOrNull()?.let { k to it } }.toMap()
         appendOnSuccess = request.trim()
         runAi(request) {
-            com.auto.classify.ai.AiOrganizer.refine(context, llm, instruction, assign, pages, request,
+            com.auto.classify.ai.AiOrganizer.refine(context, llm, instruction, assign, pages, savedOrder(), request,
                 prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
         }
     }
@@ -523,7 +525,9 @@ class AppModel(private val context: Context) {
             val base = renames.entries.firstOrNull { it.value == old }?.key ?: old
             renames[base] = new
         }
+        val order = JSONArray(savedOrder().map { names[it] ?: it })
         edit({
+            putString(Config.KEY_AI_ORDER, order.toString())
             putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(ai))
             putString(Config.KEY_AI_PAGES, JSONObject(aiPages as Map<*, *>).toString())
             putString(Config.KEY_RULES, rules)
@@ -567,6 +571,12 @@ class AppModel(private val context: Context) {
     /** What to tell the user when the AI changed settings on request; null when it changed none. */
     private fun optionsNotice(changes: List<String>): String? =
         if (changes.isEmpty()) null else "AI가 요청대로 설정을 바꿨어요\n" + changes.joinToString("\n") { "• $it" }
+
+    /** The folder order the AI chose earlier, as a list of names. */
+    private fun savedOrder(): List<String> = runCatching {
+        val a = JSONArray(prefs.getString(Config.KEY_AI_ORDER, "[]"))
+        (0 until a.length()).map { a.getString(it) }
+    }.getOrDefault(emptyList())
 
     /** Runs an AI job on a worker thread inside a foreground service, so it survives the app closing. */
     private fun background(work: () -> Unit) {
@@ -678,6 +688,7 @@ class AppModel(private val context: Context) {
                         putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(plan.assign))
                         putString(Config.KEY_AI_NOTE, plan.note)
                         putString(Config.KEY_AI_PAGES, org.json.JSONObject(plan.pages as Map<*, *>).toString())
+                        putString(Config.KEY_AI_ORDER, JSONArray(plan.folderOrder).toString())
                         putString(Config.KEY_RULES, rules)
                     })
                     optionsNotice(changed)?.let { toast(it) }

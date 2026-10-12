@@ -390,6 +390,13 @@ public final class Engine {
 
     /** Screen off: fix new apps' pages if that is all the plan would change. */
     public void onScreenOff() {
+        if (restartPending) {
+            // A failed live move can leave the dragged app transparent; a fresh Home process clears it.
+            restartPending = false;
+            log("앱 이동 중 오류가 있어 화면이 꺼진 사이 홈을 다시 시작해요");
+            main.postDelayed(() -> Process.killProcess(Process.myPid()), 300);
+            return;
+        }
         if (pendingTidy.isEmpty() || !settings.screenOffTidy || off(Diag.F_ORGANIZE)) return;
         java.util.Set<String> mine = new java.util.HashSet<>(pendingTidy);
         new Thread(() -> {
@@ -444,9 +451,14 @@ public final class Engine {
             labels.add(bridge.label(item));
         }
         new Thread(() -> {
-            Map<String, String[]> t = targets(pkgs, labels, pkg).byPkg;
+            Planner.Targets targets = targets(pkgs, labels, pkg);
+            Map<String, String[]> t = targets.byPkg;
             main.post(() -> {
                 try {
+                    if (targets.aiMissed) {
+                        retryAfterAiMiss(pkg);
+                        return;
+                    }
                     fileNewApp(pkg, app, loose, t);
                 } catch (Throwable e) {
                     Diag.failed(Diag.F_LIVE, "file new app", e);
@@ -455,7 +467,36 @@ public final class Engine {
         }, "AutoClassify-classify").start();
     }
 
+    private static final int AI_RETRIES = 3;
+    private static final long AI_RETRY_MS = 90_000;
+    private final Map<String, Integer> aiTries = new HashMap<>();
+
+    /**
+     * The AI didn't answer for a new app (rate limit, error). Moving it by guesswork would only
+     * misplace it, so leave it where the launcher put it and ask again a bit later.
+     */
+    private void retryAfterAiMiss(String pkg) {
+        int n = aiTries.merge(pkg, 1, Integer::sum);
+        if (n > AI_RETRIES) {
+            aiTries.remove(pkg);
+            log("새 앱 " + app(pkg) + ": AI가 계속 답하지 않아 그대로 둠 (정리할 때 분류돼요)");
+            return;
+        }
+        log("새 앱 " + app(pkg) + ": AI 분류 실패 · 그대로 두고 잠시 후 다시 시도 (" + n + "/" + AI_RETRIES + ")");
+        main.postDelayed(() -> {
+            try {
+                waitForApp(pkg, 0);
+            } catch (Throwable t) {
+                Diag.failed(Diag.F_LIVE, "file new app", t);
+            }
+        }, AI_RETRY_MS);
+    }
+
+    /** Set when a live move may have left an item mid-drag (invisible but taking space); Home is restarted at screen off. */
+    private volatile boolean restartPending;
+
     private void fileNewApp(String pkg, Object app, List<Object> loose, Map<String, String[]> t) {
+        aiTries.remove(pkg);
         String[] mine = t.get(pkg);
         String folder = mine == null ? null : mine[0];
         if (folder == null && Config.UNCLASSIFIED_FOLDER.equals(settings.unclassified)
@@ -524,6 +565,7 @@ public final class Engine {
                         }
                     } catch (Throwable t) {
                         pendingTidy.add(pkg);
+                        restartPending = true;
                         Diag.failed(Diag.F_LIVE, "live page move", t);
                     }
                 });
@@ -621,6 +663,9 @@ public final class Engine {
             String[] autoNames = r.getStringArray("autoNames");
             if (autoNames != null) t.autoNames.addAll(java.util.Arrays.asList(autoNames));
             t.cleanStale = settings.cleanStale;
+            t.aiMissed = r.getBoolean("aiMissed");
+            String[] folderOrder = r.getStringArray("folderOrder");
+            if (folderOrder != null) t.folderOrder.addAll(Arrays.asList(folderOrder));
             t.unclassified = settings.unclassified;
             t.unclassifiedFolder = settings.unclassifiedFolder;
             t.unclassifiedPage = settings.unclassifiedPage;
