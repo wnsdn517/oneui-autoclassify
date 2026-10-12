@@ -655,6 +655,10 @@ public final class Engine {
             int folderId = bridge.id(folder);
             for (ComponentName cn : comps) tracker.filed(cn.getPackageName(), name, folderId);
             log("'" + name + "' 폴더에 앱 " + comps.size() + "개 넣음" + (ok ? "" : " (실패)"));
+            if (!ok) {
+                Diag.check("live.add", Diag.F_LIVE, false, Diag.WARN, "'" + name + "' 폴더에 앱을 넣지 못함, 계획된 페이지로 옮겨 둠");
+                for (ComponentName cn : comps) placeLive(cn.getPackageName());
+            }
         } catch (Throwable t) {
             Diag.failed(Diag.F_LIVE, "add to folder", t);
         }
@@ -677,6 +681,11 @@ public final class Engine {
             ordered.add(ordered.remove(0));
             if (!bridge.createFolder(ordered)) {
                 log("'" + name + "' 폴더 만들기 거부됨");
+                Diag.check("live.create", Diag.F_LIVE, false, Diag.WARN, "'" + name + "' 폴더를 만들지 못함, 앱은 계획된 페이지로 옮겨 둠");
+                for (Object app : apps) {
+                    ComponentName cn = bridge.component(app);
+                    if (cn != null) placeLive(cn.getPackageName());
+                }
                 return;
             }
             pollNewFolder(name, apps, before, 0);
@@ -701,6 +710,11 @@ public final class Engine {
             main.postDelayed(() -> pollNewFolder(name, apps, before, attempt + 1), FOLDER_POLL_MS);
         } else {
             log("'" + name + "' 폴더 만들기: 폴더가 나타나지 않음");
+            Diag.check("live.create", Diag.F_LIVE, false, Diag.WARN, "'" + name + "' 폴더가 나타나지 않음, 앱은 계획된 페이지로 옮겨 둠");
+            for (Object app : apps) {
+                ComponentName cn = bridge.component(app);
+                if (cn != null) placeLive(cn.getPackageName());
+            }
         }
     }
 

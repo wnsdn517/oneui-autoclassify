@@ -275,6 +275,7 @@ public final class AiOrganizer {
             AiUsage.record(context, AiUsage.KIND_ORGANIZE, "실패: " + e.getMessage(), false, llm.lastIn, llm.lastOut);
             throw e;
         }
+        fillMissing(plan, a);
         if (!verify || plan.assign.isEmpty()) return plan;
         String proposal = describe(plan, a);
         try {
@@ -287,6 +288,7 @@ public final class AiOrganizer {
             }
             AiUsage.record(context, AiUsage.KIND_VERIFY, "앱 " + changed + "개 고침", true, llm.lastIn, llm.lastOut);
             if (checked.assign.size() < plan.assign.size() * 0.9) return plan; // a truncated answer: keep the first
+            fillMissing(checked, a);
             if (checked.answer.isEmpty()) checked.answer = plan.answer;
             checked.note = (checked.note.isEmpty() ? plan.note : checked.note) + (changed > 0 ? " (검증에서 " + changed + "개 고침)" : " (검증 통과)");
             return checked;
@@ -399,6 +401,19 @@ public final class AiOrganizer {
     }
 
     /** App number (or, from a sloppy answer, the package name) -> folder; first answer wins. */
+    /**
+     * Apps the AI left out of a full organization go outside folders, so their place is decided by
+     * the answer (and its loose_page) instead of by the unclassified-apps setting (which sends them to page 1).
+     */
+    private static void fillMissing(Plan p, Apps a) {
+        if (p.assign.isEmpty()) return;
+        int missing = 0;
+        for (String pkg : a.pkgs) {
+            if (p.assign.putIfAbsent(pkg, Classifier.LOOSE) == null) missing++;
+        }
+        if (missing > 0) p.note = (p.note.isEmpty() ? "" : p.note + " ") + "(AI가 빠뜨린 앱 " + missing + "개는 폴더 밖에 뒀어요)";
+    }
+
     private static void put(Plan p, Apps a, Object ref, String folder) {
         int idx = -1;
         if (ref instanceof Number) idx = ((Number) ref).intValue() - 1;

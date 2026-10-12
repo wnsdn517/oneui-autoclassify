@@ -160,6 +160,10 @@ class AppModel(private val context: Context) {
                 Config.ACTION_PLAN -> {
                     clearPending()
                     plan = runCatching { JSONObject(payload) }.getOrNull()
+                    val off = pageMismatches(plan?.optJSONObject("after"))
+                    if (off.isNotEmpty()) {
+                        remember("미리보기 점검", "AI가 정한 페이지와 다르게 배치된 항목이 있어요\n" + off.joinToString("\n") { "• $it" })
+                    }
                 }
                 Config.ACTION_BACKUPS -> {
                     backupsUnavailable = false
@@ -525,6 +529,39 @@ class AppModel(private val context: Context) {
             putString(Config.KEY_RULES, rules)
             putString(Config.KEY_FOLDER_NAMES, renames.entries.joinToString("\n") { "${it.key}=${it.value}" })
         })
+    }
+
+    /** Where the preview puts things differently from the pages the AI asked for, as readable lines. */
+    private fun pageMismatches(after: JSONObject?): List<String> {
+        if (after == null || prefs.getString(Config.KEY_MODE, "") != Config.MODE_AI) return emptyList()
+        val wanted = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_PAGES, ""))
+        if (wanted.isEmpty()) return emptyList()
+        val assign = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_MAP, ""))
+        val pages = after.optJSONArray("pages") ?: return emptyList()
+        val folderPage = HashMap<String, Int>()
+        val appPage = HashMap<String, Int>()
+        for (p in 0 until pages.length()) {
+            val items = pages.optJSONArray(p) ?: continue
+            for (i in 0 until items.length()) {
+                val it = items.optJSONObject(i) ?: continue
+                if (it.optString("type") == "folder") folderPage[it.optString("title").trim()] = p + 1
+                else appPage[it.optString("pkg")] = p + 1
+            }
+        }
+        val out = ArrayList<String>()
+        for ((name, pg) in wanted) {
+            val want = pg.toIntOrNull() ?: continue
+            if (name == Classifier.LOOSE) {
+                val got = assign.filterValues { it == Classifier.LOOSE }.keys.mapNotNull { appPage[it] }.filter { it != want }
+                if (got.isNotEmpty()) {
+                    out.add("폴더 밖 앱 ${got.size}개: ${want}페이지로 정했지만 ${got.distinct().sorted().joinToString(", ")}페이지에 놓임")
+                }
+            } else {
+                val got = folderPage[name]
+                if (got != null && got != want) out.add("'$name' 폴더: ${want}페이지로 정했지만 ${got}페이지에 놓임")
+            }
+        }
+        return out
     }
 
     /** What to tell the user when the AI changed settings on request; null when it changed none. */
