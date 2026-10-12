@@ -22,8 +22,6 @@ public final class Config {
     public static final String KEY_AI_MAP = "ai_map";
     /** Ask the AI where a newly installed app goes (AI mode). */
     public static final String KEY_AI_INSTALL = "ai_install";
-    /** Second AI pass that checks and corrects the first (about twice the tokens). */
-    public static final String KEY_AI_VERIFY = "ai_verify";
     /** Seconds between automatic AI requests, and how many per day. */
     public static final String KEY_AI_COOLDOWN = "ai_cooldown";
     public static final String KEY_AI_DAILY = "ai_daily";

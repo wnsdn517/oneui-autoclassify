@@ -81,15 +81,16 @@ public final class AiOrganizer {
                     + "- options: only when the user asks to change an app setting (not the layout). KEY=VALUE pairs from:\n"
                     + AiOptions.prompt().replace("set:", "  ");
 
+    /** There is no separate verification request: the model checks its own plan before it answers (with tools when it has them). */
+    private static final String CHECK_YOURSELF =
+            "Before you answer, check your own plan against the request: every app is in the place the request (or, where it is silent, "
+                    + "the app's real purpose) calls for, folder sizes, order and pages are as asked, and no app is missing. "
+                    + "Where a tool can tell you the real state (current layout, folder contents, usage), use it rather than assuming. "
+                    + "Fix what is wrong, then answer once.\n";
+
     private static final String SYSTEM_ORGANIZE =
             "You organize the apps screen (app drawer) of a Samsung Galaxy phone into folders, exactly as the user asks.\n"
-                    + RULES_OF_THE_ANSWER;
-
-    private static final String SYSTEM_VERIFY =
-            "You check a proposed folder organization of a Samsung Galaxy phone's apps screen against the user's instruction.\n"
-                    + "Look at every app: is it in the folder the instruction (or, where silent, its real purpose) calls for? "
-                    + "Are folder sizes and the requested ordering respected? Fix every mistake.\n"
-                    + "Return the full corrected organization in the same format.\n"
+                    + CHECK_YOURSELF
                     + RULES_OF_THE_ANSWER;
 
     private static final String SYSTEM_REFINE =
@@ -98,6 +99,7 @@ public final class AiOrganizer {
                     + "(moving apps, merging or splitting folders, renaming folders, pages, order); keep every other app, "
                     + "folder name and page exactly as it is. If the user asks to start over, organize everything again.\n"
                     + "Return the full organization in the same format, or empty folders and loose when nothing should change.\n"
+                    + CHECK_YOURSELF
                     + RULES_OF_THE_ANSWER;
 
     private static final String SYSTEM_NAMES =
@@ -263,20 +265,17 @@ public final class AiOrganizer {
         apps(context, null);
     }
 
-    /**
-     * Organizes every app by the instruction; with [verify] a second request checks and fixes
-     * the first answer.
-     */
-    public static Plan organize(Context context, ApiLlm llm, String instruction, boolean verify, int minApps) throws Exception {
-        return organize(context, llm, instruction, verify, minApps, null);
+    /** Organizes every app by the instruction in one request; the model checks its own plan before answering. */
+    public static Plan organize(Context context, ApiLlm llm, String instruction, int minApps) throws Exception {
+        return organize(context, llm, instruction, minApps, null);
     }
 
-    /** Progress: stage ("정리", "검증") and the answer text so far. */
+    /** Progress: stage ("정리") and the answer text so far. */
     public interface Progress {
         void on(String stage, String text);
     }
 
-    public static Plan organize(Context context, ApiLlm llm, String instruction, boolean verify, int minApps,
+    public static Plan organize(Context context, ApiLlm llm, String instruction, int minApps,
                                 Progress progress) throws Exception {
         Apps a = apps(context, progress);
         if (progress != null) progress.on(STAGE_SEND, "");
@@ -293,27 +292,7 @@ public final class AiOrganizer {
             throw e;
         }
         fillMissing(plan, a);
-        if (!verify || plan.assign.isEmpty()) return plan;
-        String proposal = describe(plan, a);
-        try {
-            Plan checked = parse(llm.generate(SYSTEM_VERIFY, header + "\n\nProposed organization:\n" + proposal, true,
-                    progress == null ? null : t -> progress.on(AiUsage.KIND_VERIFY, t)), a);
-            checked.tokens = plan.tokens + llm.lastIn + llm.lastOut;
-            int changed = 0;
-            for (Map.Entry<String, String> e : checked.assign.entrySet()) {
-                if (!e.getValue().equals(plan.assign.get(e.getKey()))) changed++;
-            }
-            AiUsage.record(context, AiUsage.KIND_VERIFY, "앱 " + changed + "개 고침", true, llm.lastIn, llm.lastOut);
-            if (checked.assign.size() < plan.assign.size() * 0.9) return plan; // a truncated answer: keep the first
-            fillMissing(checked, a);
-            if (checked.answer.isEmpty()) checked.answer = plan.answer;
-            checked.note = (checked.note.isEmpty() ? plan.note : checked.note) + (changed > 0 ? " (검증에서 " + changed + "개 고침)" : " (검증 통과)");
-            return checked;
-        } catch (Exception e) {
-            AiUsage.record(context, AiUsage.KIND_VERIFY, "실패: " + e.getMessage(), false, llm.lastIn, llm.lastOut);
-            plan.note += " (검증 실패: " + e.getMessage() + ")";
-            return plan;
-        }
+        return plan;
     }
 
     /**

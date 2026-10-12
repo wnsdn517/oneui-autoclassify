@@ -394,7 +394,7 @@ class AppModel(private val context: Context) {
         edit({ putString(Config.KEY_AI_REQUEST, instruction) }, reload = false)
         runAi(instruction) {
                 com.auto.classify.ai.AiOrganizer.organize(context, llm, instruction,
-                    prefs.getBoolean(Config.KEY_AI_VERIFY, false), prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
+                    prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
         }
     }
 
@@ -653,8 +653,7 @@ class AppModel(private val context: Context) {
 
     /** What the streamed answer so far says the AI is doing, from how far its JSON has come. */
     private fun streamStage(kind: String, text: String): String {
-        val verify = kind == com.auto.classify.ai.AiUsage.KIND_VERIFY
-        val prefix = if (verify) "검토 · " else ""
+        val prefix = ""
         return when {
             text.isEmpty() -> prefix + if (aiWeb) "검색하며 생각하는 중" else "AI가 생각하는 중"
             !text.contains("\"folders\"") -> prefix + "답변 쓰는 중"
@@ -673,7 +672,7 @@ class AppModel(private val context: Context) {
         val names = if (text.isEmpty()) null else FOLDER_NAME.findAll(text).map { it.groupValues[1] }.distinct().toList()
         main.post {
             val base = when (stage) {
-                com.auto.classify.ai.AiUsage.KIND_VERIFY, com.auto.classify.ai.AiUsage.KIND_ORGANIZE -> streamStage(stage, text)
+                com.auto.classify.ai.AiUsage.KIND_ORGANIZE -> streamStage(stage, text)
                 com.auto.classify.ai.AiUsage.KIND_NAMES -> if (text.isEmpty()) "이름 고민하는 중" else "이름 짓는 중 (${names?.size ?: 0}개)"
                 com.auto.classify.ai.AiOrganizer.STAGE_SEND -> streamStage(com.auto.classify.ai.AiUsage.KIND_ORGANIZE, "")
                 com.auto.classify.ai.AiOrganizer.STAGE_LIST -> "앱 목록 읽는 중"

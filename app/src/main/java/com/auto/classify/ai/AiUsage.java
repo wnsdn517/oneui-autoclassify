@@ -20,7 +20,6 @@ public final class AiUsage {
     private static final int KEEP = 200;
 
     public static final String KIND_ORGANIZE = "정리";
-    public static final String KIND_VERIFY = "검증";
     public static final String KIND_INSTALL = "새 앱";
     public static final String KIND_RULES = "규칙";
     public static final String KIND_NAMES = "이름";

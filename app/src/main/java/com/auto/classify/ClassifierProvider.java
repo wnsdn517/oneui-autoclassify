@@ -73,7 +73,7 @@ public class ClassifierProvider extends ContentProvider {
         if (("ai_models".equals(method) || "ai_organize".equals(method))
                 && (caller == Process.SHELL_UID || caller == Process.ROOT_UID)) {
             // Command-line checks with the saved key; nothing is stored.
-            // content call ... --method ai_models | --method ai_organize --arg "지시" [--extra verify:b:true]
+            // content call ... --method ai_models | --method ai_organize --arg "지시"
             Bundle out = new Bundle();
             try {
                 com.auto.classify.ai.ApiLlm llm = com.auto.classify.ai.ApiLlm.fromPrefs(getContext());
@@ -92,8 +92,7 @@ public class ClassifierProvider extends ContentProvider {
                     out.putString("best", com.auto.classify.ai.ApiLlm.bestModel(models));
                     out.putString("saved", llm.model());
                 } else {
-                    com.auto.classify.ai.AiOrganizer.Plan plan = com.auto.classify.ai.AiOrganizer.organize(getContext(), llm, arg,
-                            extras != null && extras.getBoolean("verify"), 2);
+                    com.auto.classify.ai.AiOrganizer.Plan plan = com.auto.classify.ai.AiOrganizer.organize(getContext(), llm, arg, 2);
                     Map<String, Integer> sizes = new LinkedHashMap<>();
                     for (String f : plan.assign.values()) sizes.merge(f, 1, Integer::sum);
                     out.putString("folders", sizes.toString());

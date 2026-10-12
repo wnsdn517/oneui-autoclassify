@@ -284,7 +284,6 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
             }
         }
     }
-    PrefSwitch(model, Config.KEY_AI_VERIFY, false, "검증 추가", "토큰 약 2배")
 }
 
 /** The one AI input in the preview: adjust, rename or add rules, depending on the mode. */
