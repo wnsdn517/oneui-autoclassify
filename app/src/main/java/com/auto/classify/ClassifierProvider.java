@@ -217,7 +217,8 @@ public class ClassifierProvider extends ContentProvider {
                     if (Classifier.EXCLUDE.equals(hit.folder)) continue;
                     targets[i] = hit.folder;
                     reasons[i] = "직접 정한 위치";
-                    pages[i] = hit.page;
+                    // A hand-picked place names the folder; unless it names a page too, the AI's page for that folder applies.
+                    pages[i] = hit.page > 0 ? hit.page : aiPageOf(aiPages, hit.folder);
                     if (hit.color != null) colors[i] = hit.color;
                     continue;
                 }
@@ -231,11 +232,7 @@ public class ClassifierProvider extends ContentProvider {
                 if (folder == null) continue;
                 targets[i] = folder;
                 reasons[i] = why;
-                try {
-                    String pg = aiPages.get(folder);
-                    if (pg != null) pages[i] = Integer.parseInt(pg);
-                } catch (NumberFormatException ignored) {
-                }
+                pages[i] = aiPageOf(aiPages, folder);
             }
         } else {
             Set<String> signals = new HashSet<>();
@@ -316,6 +313,16 @@ public class ClassifierProvider extends ContentProvider {
             out.putLongArray("installed", times);
         }
         return out;
+    }
+
+    /** The page the AI chose for a folder (or for Classifier.LOOSE); 0 = none. */
+    private static int aiPageOf(Map<String, String> aiPages, String folder) {
+        try {
+            String pg = folder == null ? null : aiPages.get(folder);
+            return pg == null ? 0 : Integer.parseInt(pg);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /**

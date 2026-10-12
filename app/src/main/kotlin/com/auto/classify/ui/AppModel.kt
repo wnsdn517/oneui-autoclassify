@@ -184,6 +184,13 @@ class AppModel(private val context: Context) {
                         if (plan?.optBoolean("gridAssumed") == true) {
                             causes.add("홈의 격자 크기를 읽지 못해 4x6(24칸)으로 가정했어요. 실제 칸 수가 다르면 페이지가 어긋나요")
                         }
+                        val handPins = prefs.getString(Config.KEY_RULES, "")!!.lines().count { l ->
+                            val t = l.substringAfter('|', "").trim()
+                            !l.trim().startsWith("#") && (t.startsWith("re:^") && t.endsWith("$") || t.startsWith("="))
+                        }
+                        if (handPins > 0) {
+                            causes.add("직접 정한 위치(규칙) ${handPins}개가 있어요. 이런 앱은 AI 배치보다 규칙이 먼저 적용돼요 (규칙에 페이지가 없으면 AI가 정한 페이지를 따라요)")
+                        }
                         if (causes.isEmpty()) {
                             causes.add("계획 안에서는 밀린 곳이 없어요. 직접 정한 규칙이나 제외한 앱이 우선했거나, AI의 페이지 지정이 계획에 전달되지 않았을 수 있어요" +
                                 " (페이지를 지정한 폴더 밖 앱 ${pinned}개, 폴더 ${plan?.optJSONObject("pins")?.length() ?: 0}개)")
