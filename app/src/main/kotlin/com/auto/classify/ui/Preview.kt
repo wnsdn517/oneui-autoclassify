@@ -357,9 +357,17 @@ fun PreviewSheet(model: AppModel, plan: JSONObject) {
                 }
             }
             if (changed || editor.dirty) {
+                // Text typed for the AI but never sent: the first Apply only warns, the second applies.
+                var warned by remember { mutableStateOf(false) }
+                androidx.compose.runtime.LaunchedEffect(model.aiDraft) { warned = false }
                 SheetActions("취소", close, "적용", {
-                    model.plan = null
-                    if (editor.dirty) model.applyLayout(EditorState.from(after), editor) else model.request("apply")
+                    if (model.aiDraft.isNotBlank() && !warned) {
+                        warned = true
+                        model.toast("AI에게 입력한 내용이 아직 전송되지 않았어요. 한 번 더 누르면 그대로 적용돼요")
+                    } else {
+                        model.plan = null
+                        if (editor.dirty) model.applyLayout(EditorState.from(after), editor) else model.request("apply")
+                    }
                 })
             } else {
                 SheetActions("닫기", close, "확인", close)

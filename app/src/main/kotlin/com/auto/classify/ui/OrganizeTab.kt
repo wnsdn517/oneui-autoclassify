@@ -314,6 +314,8 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
 fun AiInput(model: AppModel, layout: org.json.JSONObject?) {
     var text by remember { mutableStateOf("") }
     var sent by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { model.aiDraft = "" } }
+    androidx.compose.runtime.LaunchedEffect(text) { model.aiDraft = text }
     // The request stays until the AI succeeds, so a failure (503 …) can be sent again as is.
     androidx.compose.runtime.LaunchedEffect(model.aiRunning) {
         if (sent && !model.aiRunning) {

@@ -371,6 +371,8 @@ class AppModel(private val context: Context) {
     /** Past AI replies and summaries, newest first; [aiAnswer] is the latest one for the current screen. */
     var aiHistory by mutableStateOf(AiHistory.load(prefs))
         private set
+    /** Text typed in the preview's AI box but not sent yet; Apply asks once before ignoring it. */
+    var aiDraft by mutableStateOf("")
     var aiAnswer by mutableStateOf<String?>(null)
         private set
 
