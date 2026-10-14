@@ -62,21 +62,15 @@ fun SettingsTab(model: AppModel, activity: MainActivity) {
         item { SmallTitle("화면") }
         item {
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                // Three choices side by side: one tap, no popup.
-                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ThemeChoice.values.forEachIndexed { i, value ->
-                        val selected = ThemeChoice.mode == value
-                        TextButton(
-                            ThemeChoice.names[i],
-                            {
-                                ThemeChoice.mode = value
-                                model.edit({ putString(ThemeChoice.KEY, value) }, reload = false)
-                            },
-                            Modifier.weight(1f),
-                            colors = if (selected) ButtonDefaults.textButtonColorsPrimary() else ButtonDefaults.textButtonColors(),
-                        )
-                    }
-                }
+                WindowDropdownPreference(
+                    items = ThemeChoice.names,
+                    selectedIndex = ThemeChoice.values.indexOf(ThemeChoice.mode).coerceAtLeast(0),
+                    title = "테마",
+                    onSelectedIndexChange = {
+                        ThemeChoice.mode = ThemeChoice.values[it]
+                        model.edit({ putString(ThemeChoice.KEY, ThemeChoice.values[it]) }, reload = false)
+                    },
+                )
             }
         }
         item { SmallTitle("AI 연결") }

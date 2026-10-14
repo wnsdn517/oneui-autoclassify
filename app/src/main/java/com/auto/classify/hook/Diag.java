@@ -137,6 +137,7 @@ public final class Diag {
         for (JSONObject c : checks.values()) arr.put(c);
         return new JSONObject()
                 .put("launcherVersion", launcherVersion)
+                .put("hookVersion", com.auto.classify.BuildConfig.VERSION_NAME)
                 .put("attached", attached)
                 .put("checks", arr);
     }
@@ -144,6 +145,8 @@ public final class Diag {
     static synchronized String dump() {
         flushRepeats();
         StringBuilder sb = new StringBuilder();
+        sb.append("hook ").append(com.auto.classify.BuildConfig.VERSION_NAME).append(" · 덤프 ")
+                .append(stamp(System.currentTimeMillis())).append("\n");
         if (file != null) {
             File old = new File(file.getPath() + ".1");
             sb.append(read(old)).append(read(file));

@@ -11,8 +11,8 @@ android {
         applicationId 'com.auto.classify'
         minSdk 35
         targetSdk 35
-        versionCode 56
-        versionName '0.19.2'
+        versionCode 57
+        versionName '0.19.3'
     }
 
     buildTypes {
@@ -31,6 +31,7 @@ android {
 
     buildFeatures {
         compose true
+        buildConfig true
     }
 }
 

@@ -72,6 +72,12 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
     val scroll = MiuixScrollBehavior()
 
     val hazeState = rememberHazeState()
+    // Blur plus a light tint of the theme surface, so the bar reads as a surface over the list.
+    val surfaceTint = MiuixTheme.colorScheme.surface.copy(alpha = 0.55f)
+    val barStyle = HazeBlurStyle {
+        blurRadius(24.dp)
+        backgroundColor(surfaceTint)
+    }
     var overlayHeight by remember { mutableIntStateOf(0) }
     val density = androidx.compose.ui.platform.LocalDensity.current
 
@@ -99,14 +105,16 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
                     .onSizeChanged { overlayHeight = it.height }
                     .navigationBarsPadding(),
             ) {
-                // The tab's main action sits right above the tabs, within thumb reach.
-                BottomAction(model, tab)
-                // Tabs on a blurred, rounded surface over the pages.
+                // The tab's main action sits right above the tabs, within thumb reach, on the same blur.
+                Box(Modifier.fillMaxWidth().hazeBlur(input = HazeInput.Sources(hazeState), style = barStyle)) {
+                    BottomAction(model, tab)
+                }
+                // Tabs on a blurred, tinted, rounded surface over the pages.
                 Box(Modifier.padding(horizontal = 12.dp, vertical = 6.dp).clip(RoundedCornerShape(28.dp))) {
                     Box(
                         Modifier.matchParentSize().hazeBlur(
                             input = HazeInput.Sources(hazeState),
-                            style = HazeBlurStyle { blurRadius(24.dp) },
+                            style = barStyle,
                         ),
                     )
                     FloatingNavigationBar(color = Color.Transparent) {

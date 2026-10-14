@@ -302,7 +302,7 @@ public class ModuleMain implements IXposedHookLoadPackage {
         } catch (Exception e) {
             launcher = "?";
         }
-        log("환경: One UI 홈 " + launcher + " · " + Build.MODEL + " · Android " + Build.VERSION.RELEASE
+        log("환경: 모듈 " + BuildConfig.VERSION_NAME + " · One UI 홈 " + launcher + " · " + Build.MODEL + " · Android " + Build.VERSION.RELEASE
                 + " (SDK " + Build.VERSION.SDK_INT + ") · " + Build.FINGERPRINT);
     }
 

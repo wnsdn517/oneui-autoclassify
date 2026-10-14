@@ -50,6 +50,15 @@ public final class Diagnosis {
             JSONObject o = new JSONObject(json);
             d.launcherVersion = o.optString("launcherVersion", "?");
             d.attached = o.optBoolean("attached");
+            // The hook loaded into One UI Home only changes when Home restarts, so a mismatch means
+            // Home is still running the previous module build.
+            String hook = o.optString("hookVersion", "");
+            String app = com.auto.classify.BuildConfig.VERSION_NAME;
+            if (!hook.equals(app)) {
+                String shown = hook.isEmpty() ? "이전 버전" : hook;
+                d.messages.add("홈에 떠 있는 모듈(" + shown + ")이 앱(" + app + ")과 달라요. One UI 홈을 재시작하면 최신 모듈이 적용돼요");
+                if (d.level == Level.OK) d.level = Level.WARN;
+            }
             JSONArray checks = o.optJSONArray("checks");
             for (int i = 0; checks != null && i < checks.length(); i++) {
                 JSONObject c = checks.getJSONObject(i);

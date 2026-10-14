@@ -266,7 +266,7 @@ public final class Engine {
                 log("tracking:\n" + tracker.dump() + "backups: " + String.join(", ", backup.list()));
                 break;
             default:
-                log("알 수 없는 명령 " + cmd);
+                report("홈이 모르는 명령이에요: " + cmd + " (One UI 홈을 재시작해 최신 모듈을 불러오세요)");
         }
     }
 

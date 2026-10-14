@@ -286,7 +286,8 @@ class AppModel(private val context: Context) {
         val timeout = Runnable {
             busy = false
             note("요청 '$cmd' 응답 없음")
-            messages.tryEmit("One UI 홈이 응답하지 않아요. 앱스 화면을 한 번 열어 주세요.")
+            // After an app update the home keeps the old hook code until it restarts, so it ignores new commands.
+            messages.tryEmit("One UI 홈이 응답하지 않아요. 앱을 업데이트했다면 One UI 홈을 재시작해 주세요 (LSPosed에서 범위가 맞는지도 확인)")
             requestHealth()
         }
         pendingTimeout = timeout
