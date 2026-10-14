@@ -910,26 +910,24 @@ private fun AiHistoryEntry(time: String, request: String, text: String) {
 
 /** The AI's latest reply or summary, and the earlier ones on demand. */
 /**
- * An answer or warning list. Bullet lines ("• ") beyond the first few fold away behind one tap, so a
- * long list of mismatched items doesn't push the rest of the screen off.
+ * An answer or warning list. Collapsed, it shows the text up to the (keep+1)-th "• " item, so the
+ * remaining items and the cause section behind them fold away; one tap opens everything.
  */
 @Composable
 fun CollapsibleAnswer(text: String) {
     var open by remember(text) { mutableStateOf(false) }
     val lines = text.lines()
-    val bullets = lines.count { it.startsWith("• ") }
+    val bulletIdx = lines.indices.filter { lines[it].startsWith("• ") }
     val keep = 4
-    if (bullets <= keep) {
+    if (bulletIdx.size <= keep) {
         Text(text, Modifier.fillMaxWidth().padding(top = 8.dp), style = MiuixTheme.textStyles.body2)
         return
     }
-    var seen = 0
-    val shown = if (open) lines else lines.filter { l ->
-        if (l.startsWith("• ")) { seen++; seen <= keep } else true
-    }
+    val cut = bulletIdx[keep]
+    val shown = if (open) lines else lines.take(cut)
     Text(shown.joinToString("\n"), Modifier.fillMaxWidth().padding(top = 8.dp), style = MiuixTheme.textStyles.body2)
     Text(
-        if (open) "접기" else "외 ${bullets - keep}개 더 보기",
+        if (open) "접기" else "나머지 ${lines.size - cut}줄 더 보기 (원인 포함)",
         Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 8.dp),
         color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.body2,
     )

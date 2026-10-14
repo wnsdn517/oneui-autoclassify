@@ -58,7 +58,7 @@ private val OPENAI_PRESETS = listOf(
 
 @Composable
 fun SettingsTab(model: AppModel, activity: MainActivity) {
-    LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(bottom = 12.dp + LocalNavInset.current)) {
+    LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(top = LocalTopInset.current, bottom = 12.dp + LocalNavInset.current)) {
         item { SmallTitle("화면") }
         item {
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {

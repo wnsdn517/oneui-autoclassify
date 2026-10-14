@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -21,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
@@ -30,16 +32,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
-import dev.chrisbanes.haze.HazeInput
-import dev.chrisbanes.haze.blur.HazeBlurStyle
-import dev.chrisbanes.haze.blur.hazeBlur
-import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.rememberHazeState
 import com.auto.classify.core.Config
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.FloatingNavigationBar
+import top.yukonga.miuix.kmp.basic.FloatingToolbarDefaults
+import top.yukonga.miuix.kmp.blur.BlendColorEntry
+import top.yukonga.miuix.kmp.blur.BlurDefaults
+import top.yukonga.miuix.kmp.blur.ProgressiveBlur
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.progressiveTextureBlur
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import top.yukonga.miuix.kmp.blur.textureBlur
+import androidx.compose.ui.graphics.RectangleShape
 import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SnackbarHost
@@ -60,6 +66,9 @@ private val TITLES = listOf("정리", "앱", "백업", "설정")
 /** Height of the floating bar and the action above it; lists add it to their bottom padding. */
 val LocalNavInset = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
+/** Height of the title bar; lists add it to their top padding so the first row starts below it. */
+val LocalTopInset = androidx.compose.runtime.compositionLocalOf { 0.dp }
+
 @Composable
 fun MainScreen(model: AppModel, activity: MainActivity) {
     val pager = androidx.compose.foundation.pager.rememberPagerState { TITLES.size }
@@ -69,61 +78,80 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
     val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(Unit) { model.messages.collect { activity.showMessage(it) } }
     LaunchedEffect(Unit) { Updater.check(context, quiet = true) }
-    val scroll = MiuixScrollBehavior()
-
-    val hazeState = rememberHazeState()
-    // Blur plus a light tint of the theme surface, so the bar reads as a surface over the list.
-    val surfaceTint = MiuixTheme.colorScheme.surface.copy(alpha = 0.55f)
-    val barStyle = HazeBlurStyle {
-        blurRadius(24.dp)
-        backgroundColor(surfaceTint)
+    // Miuix blur, the way the Miuix sample app wires it: the pages are captured as a backdrop, the title
+    // bar gets a progressive fade-out blur, and the floating bar gets a rounded texture blur.
+    val surface = MiuixTheme.colorScheme.surface
+    val surfaceContainer = MiuixTheme.colorScheme.surfaceContainer
+    val backdrop = rememberLayerBackdrop {
+        drawRect(surface)
+        drawContent()
     }
     var overlayHeight by remember { mutableIntStateOf(0) }
+    var topHeight by remember { mutableIntStateOf(0) }
     val density = androidx.compose.ui.platform.LocalDensity.current
 
-    Scaffold(
-        topBar = { TopAppBar(title = if (tab == 0) "앱 자동 분류" else TITLES[tab], scrollBehavior = scroll) },
-    ) { padding ->
-        // The pages run under the floating bar so the blur has something to blur; each list keeps its
-        // last rows clear of the bar through LocalNavInset.
-        Box(Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()).nestedScroll(scroll.nestedScrollConnection)) {
-            CompositionLocalProvider(LocalNavInset provides with(density) { overlayHeight.toDp() }) {
-                Box(Modifier.fillMaxSize().hazeSource(hazeState)) {
-                    // Swipe sideways between tabs, like HyperOS apps.
-                    androidx.compose.foundation.pager.HorizontalPager(pager, beyondViewportPageCount = 1) { page ->
-                        when (page) {
-                            0 -> OrganizeTab(model) { go(3) }
-                            1 -> AppsTab(model)
-                            2 -> BackupTab(model)
-                            else -> SettingsTab(model, activity)
-                        }
+    Box(Modifier.fillMaxSize()) {
+        // The pages run under the title bar and the floating bar so both have something to blur; each
+        // list keeps its first and last rows clear of them through LocalTopInset and LocalNavInset.
+        CompositionLocalProvider(
+            LocalTopInset provides with(density) { topHeight.toDp() },
+            LocalNavInset provides with(density) { overlayHeight.toDp() },
+        ) {
+            Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+                // Swipe sideways between tabs, like HyperOS apps.
+                androidx.compose.foundation.pager.HorizontalPager(pager, beyondViewportPageCount = 1) { page ->
+                    when (page) {
+                        0 -> OrganizeTab(model) { go(3) }
+                        1 -> AppsTab(model)
+                        2 -> BackupTab(model)
+                        else -> SettingsTab(model, activity)
                     }
                 }
             }
-            Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                    .onSizeChanged { overlayHeight = it.height }
-                    .navigationBarsPadding(),
+        }
+        // Title bar: transparent over a progressive blur that fades out toward the content.
+        Box(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                .onSizeChanged { topHeight = it.height },
+        ) {
+            Box(
+                Modifier.matchParentSize().progressiveTextureBlur(
+                    backdrop = backdrop,
+                    shape = RectangleShape,
+                    gradient = ProgressiveBlur.Top.copy(curve = 2.2f),
+                    blurRadius = 10f,
+                    colors = BlurDefaults.blurColors(
+                        blendColors = listOf(BlendColorEntry(color = surface.copy(alpha = 0.3f))),
+                    ),
+                ),
+            )
+            Column(Modifier.statusBarsPadding()) {
+                TopAppBar(title = if (tab == 0) "앱 자동 분류" else TITLES[tab], color = Color.Transparent)
+            }
+        }
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .onSizeChanged { overlayHeight = it.height }
+                .navigationBarsPadding(),
+        ) {
+            // The tab's main action sits right above the tabs, within thumb reach.
+            BottomAction(model, tab)
+            // Tabs on a rounded, blurred surface over the pages, as the Miuix sample shows them.
+            FloatingNavigationBar(
+                modifier = Modifier.textureBlur(
+                    backdrop = backdrop,
+                    shape = RoundedCornerShape(FloatingToolbarDefaults.CornerRadius),
+                    blurRadius = 25f,
+                    colors = BlurDefaults.blurColors(
+                        blendColors = listOf(BlendColorEntry(color = surfaceContainer.copy(alpha = 0.6f))),
+                    ),
+                ),
+                color = Color.Transparent,
             ) {
-                // The tab's main action sits right above the tabs, within thumb reach, on the same blur.
-                Box(Modifier.fillMaxWidth().hazeBlur(input = HazeInput.Sources(hazeState), style = barStyle)) {
-                    BottomAction(model, tab)
-                }
-                // Tabs on a blurred, tinted, rounded surface over the pages.
-                Box(Modifier.padding(horizontal = 12.dp, vertical = 6.dp).clip(RoundedCornerShape(28.dp))) {
-                    Box(
-                        Modifier.matchParentSize().hazeBlur(
-                            input = HazeInput.Sources(hazeState),
-                            style = barStyle,
-                        ),
-                    )
-                    FloatingNavigationBar(color = Color.Transparent) {
-                        FloatingNavigationBarItem(tab == 0, { go(0) }, MiuixIcons.GridView, TITLES[0])
-                        FloatingNavigationBarItem(tab == 1, { go(1) }, MiuixIcons.Layers, TITLES[1])
-                        FloatingNavigationBarItem(tab == 2, { go(2) }, MiuixIcons.Backup, TITLES[2])
-                        FloatingNavigationBarItem(tab == 3, { go(3) }, MiuixIcons.Settings, TITLES[3])
-                    }
-                }
+                FloatingNavigationBarItem(tab == 0, { go(0) }, MiuixIcons.GridView, TITLES[0])
+                FloatingNavigationBarItem(tab == 1, { go(1) }, MiuixIcons.Layers, TITLES[1])
+                FloatingNavigationBarItem(tab == 2, { go(2) }, MiuixIcons.Backup, TITLES[2])
+                FloatingNavigationBarItem(tab == 3, { go(3) }, MiuixIcons.Settings, TITLES[3])
             }
         }
     }
@@ -148,16 +176,18 @@ private fun BottomAction(model: AppModel, tab: Int) {
             ) { model.request("plan") }
         }
         2 -> Triple("지금 백업", !model.disabledFeatures().contains(Diagnosis.F_BACKUP)) {
-            model.request("backup")
-            model.requestBackups()
+            model.requestBackupNow()
         }
         else -> return
     }
-    TextButton(
-        text = text, onClick = action, enabled = enabled,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(52.dp),
-        colors = ButtonDefaults.textButtonColorsPrimary(),
-    )
+    // A compact, centered action: the big full-width button took too much of the page.
+    Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+        TextButton(
+            text = text, onClick = action, enabled = enabled,
+            modifier = Modifier.width(200.dp).height(44.dp),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+        )
+    }
 }
 
 /** Red banner shown after the user dismissed a self-check problem. */

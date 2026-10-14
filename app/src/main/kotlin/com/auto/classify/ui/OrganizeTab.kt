@@ -67,7 +67,7 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
     val hasKey = remember(model.settingsVersion) { ApiLlm.fromPrefs(context) != null }
 
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(bottom = 12.dp + LocalNavInset.current)) {
+        LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(top = LocalTopInset.current, bottom = 12.dp + LocalNavInset.current)) {
             item { RiskBanner(model) { model.showDiagnosis = true } }
             item { UpdateBanner() }
             item {

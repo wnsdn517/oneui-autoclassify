@@ -186,6 +186,7 @@ class AppModel(private val context: Context) {
     }
 
     private var pendingTimeout: Runnable? = null
+    private var backupPending = false
     private var healthTimeout: Runnable? = null
     private var logsCallback: ((String?) -> Unit)? = null
     private var logsTimeout: Runnable? = null
@@ -249,6 +250,11 @@ class AppModel(private val context: Context) {
                     clearPending()
                     messages.tryEmit(payload)
                     requestHealth() // runtime failures are recorded by the launcher
+                    // The backup list is asked for only after the launcher answers, so it includes the new snapshot.
+                    if (backupPending) {
+                        backupPending = false
+                        requestBackups()
+                    }
                 }
             }
         }
@@ -280,11 +286,18 @@ class AppModel(private val context: Context) {
     }
 
     /** Sends a command whose answer comes back as a result/plan; shows a hint if none arrives. */
+    /** "지금 백업": the list is refreshed once the launcher answers, not before the snapshot exists. */
+    fun requestBackupNow() {
+        backupPending = true
+        request("backup")
+    }
+
     fun request(cmd: String, arg: String? = null) {
         clearPending()
         busy = true
         val timeout = Runnable {
             busy = false
+            backupPending = false
             note("요청 '$cmd' 응답 없음")
             // After an app update the home keeps the old hook code until it restarts, so it ignores new commands.
             messages.tryEmit("One UI 홈이 응답하지 않아요. 앱을 업데이트했다면 One UI 홈을 재시작해 주세요 (LSPosed에서 범위가 맞는지도 확인)")
