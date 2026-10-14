@@ -40,7 +40,7 @@ fun BackupTab(model: AppModel) {
     val off = model.disabledFeatures().contains(Diagnosis.F_BACKUP)
 
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 12.dp)) {
+        LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 12.dp + LocalNavInset.current)) {
             item { RiskBanner(model) { model.showDiagnosis = true } }
             val list = model.backups
             when {

@@ -302,6 +302,19 @@ fun PreviewSheet(model: AppModel, plan: JSONObject) {
     WindowBottomSheet(show = true, title = "정리 미리보기", onDismissRequest = close) {
         Column(Modifier.heightIn(max = 900.dp)) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                model.gridWarning?.let { warning ->
+                    top.yukonga.miuix.kmp.basic.Card(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        colors = top.yukonga.miuix.kmp.basic.CardDefaults.defaultColors(
+                            color = MiuixTheme.colorScheme.errorContainer,
+                            contentColor = MiuixTheme.colorScheme.onErrorContainer,
+                        ),
+                    ) {
+                        Text("배치 경고", style = MiuixTheme.textStyles.title4, color = MiuixTheme.colorScheme.onErrorContainer)
+                        Text(warning, Modifier.padding(top = 4.dp), style = MiuixTheme.textStyles.body2,
+                            color = MiuixTheme.colorScheme.onErrorContainer)
+                    }
+                }
                 Hint(
                     if (!changed) "이미 정리되어 있어요"
                     else "앱 ${moves.length()}개 이동 · 새 폴더 ${created.length()}개"

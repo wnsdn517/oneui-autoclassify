@@ -158,6 +158,8 @@ class AppModel(private val context: Context) {
     var backupsUnavailable by mutableStateOf(false)
         private set
     var plan by mutableStateOf<JSONObject?>(null)
+    /** Shown in the preview when the home screen's tile count could not be read and 4x6 was assumed. */
+    var gridWarning by mutableStateOf<String?>(null)
     var folders by mutableStateOf<List<String>>(emptyList())
         private set
     var busy by mutableStateOf(false)
@@ -195,15 +197,13 @@ class AppModel(private val context: Context) {
                 Config.ACTION_PLAN -> {
                     clearPending()
                     plan = runCatching { JSONObject(payload) }.getOrNull()
+                    gridWarning = if (plan?.optBoolean("gridAssumed") == true) GRID_WARNING else null
                     val off = pageMismatches(plan?.optJSONObject("after"))
                     if (off.isNotEmpty()) {
                         val pinned = plan?.optInt("loosePinned") ?: 0
                         val notes = plan?.optJSONObject("pinNotes")
                         val causes = ArrayList<String>()
                         notes?.keys()?.forEach { k -> causes.add((if (k == Classifier.LOOSE) "폴더 밖 앱" else "'$k'") + ": " + notes.optString(k)) }
-                        if (plan?.optBoolean("gridAssumed") == true) {
-                            causes.add("홈의 격자 크기를 읽지 못해 4x6(24칸)으로 가정했어요. 실제 칸 수가 다르면 페이지가 어긋나요")
-                        }
                         val handPins = prefs.getString(Config.KEY_RULES, "")!!.lines().count { l ->
                             val t = l.substringAfter('|', "").trim()
                             !l.trim().startsWith("#") && (t.startsWith("re:^") && t.endsWith("$") || t.startsWith("="))
@@ -819,6 +819,8 @@ class AppModel(private val context: Context) {
     }
 
     companion object {
+        /** Same wording as the self-check (Engine.checkGrid). */
+        const val GRID_WARNING = "홈 화면 앱 타일 수를 감지하지 못해 4x6으로 가정했어요. 페이지가 밀리거나 의도와 다르게 배치될 수 있어요"
         const val RULES_PREFIX = "rules_"
         private const val RULES_SPLIT = "rules_split_v1"
         val FOLDER_NAME = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"")

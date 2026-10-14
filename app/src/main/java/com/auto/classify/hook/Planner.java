@@ -196,18 +196,51 @@ final class Planner {
     Planner(Context context) {
         this.context = context;
         this.dbFile = context.getDatabasePath("OneUI.db");
+        readGridCache();
     }
 
     void setGridSource(java.util.function.Supplier<int[]> source) {
         this.gridSource = source;
     }
 
-    /** Grid of the apps screen as reported by the launcher; used to refill pages. */
+    /**
+     * Grid of the apps screen as reported by the launcher; used to refill pages. Remembered in a file,
+     * so a later start that can't read the live grid still uses the real size instead of 4x6.
+     */
     void setGrid(int cols, int rows) {
         if (cols > 0 && rows > 0) {
+            boolean changed = !gridKnown || this.cols != cols || this.rows != rows;
             this.cols = cols;
             this.rows = rows;
             this.gridKnown = true;
+            if (changed) writeGridCache(cols, rows);
+        }
+    }
+
+    private File gridCache() {
+        return new File(context.getFilesDir(), "apps_grid.txt");
+    }
+
+    private void readGridCache() {
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(gridCache()))) {
+            String[] parts = r.readLine().trim().split("x");
+            int c = Integer.parseInt(parts[0].trim());
+            int w = Integer.parseInt(parts[1].trim());
+            if (c > 0 && w > 0) {
+                this.cols = c;
+                this.rows = w;
+                this.gridKnown = true;
+            }
+        } catch (Exception ignored) {
+            // No cache yet: the first live read creates it.
+        }
+    }
+
+    private void writeGridCache(int cols, int rows) {
+        try (java.io.FileWriter w = new java.io.FileWriter(gridCache())) {
+            w.write(cols + "x" + rows + "\n");
+        } catch (java.io.IOException e) {
+            Diag.log("격자 크기 저장 실패: " + e);
         }
     }
 

@@ -96,7 +96,7 @@ fun AppsTab(model: AppModel) {
                 (filter == 0 || it.pkg in excluded) &&
                     (query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true))
             }
-            LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(12.dp)) {
+            LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp + LocalNavInset.current)) {
                 item {
                     Hint(if (classifying) "앱 ${shown.size}개 · 분류하는 중…"
                         else "앱 ${shown.size}개 · 누르면 자세히 보기")

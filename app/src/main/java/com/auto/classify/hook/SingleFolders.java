@@ -76,6 +76,8 @@ public final class SingleFolders {
         List<String> problems = new ArrayList<>();
         DexKitBridge bridge = null;
         try {
+            // DexKit's JNI code is not loaded by its own Java class here; without this every query fails.
+            System.loadLibrary("dexkit");
             bridge = DexKitBridge.create(apkPath);
             String p = paged(bridge, cl);
             if (p != null) problems.add("페이지형: " + p);

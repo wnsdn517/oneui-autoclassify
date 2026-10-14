@@ -20,11 +20,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.blur.HazeBlurStyle
+import dev.chrisbanes.haze.blur.hazeBlur
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import com.auto.classify.core.Config
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -47,6 +57,9 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 
 private val TITLES = listOf("정리", "앱", "백업", "설정")
 
+/** Height of the floating bar and the action above it; lists add it to their bottom padding. */
+val LocalNavInset = androidx.compose.runtime.compositionLocalOf { 0.dp }
+
 @Composable
 fun MainScreen(model: AppModel, activity: MainActivity) {
     val pager = androidx.compose.foundation.pager.rememberPagerState { TITLES.size }
@@ -58,36 +71,56 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
     LaunchedEffect(Unit) { Updater.check(context, quiet = true) }
     val scroll = MiuixScrollBehavior()
 
+    val hazeState = rememberHazeState()
+    var overlayHeight by remember { mutableIntStateOf(0) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
     Scaffold(
         topBar = { TopAppBar(title = if (tab == 0) "앱 자동 분류" else TITLES[tab], scrollBehavior = scroll) },
-        bottomBar = {
-            Column(Modifier.background(MiuixTheme.colorScheme.surface)) {
-                // The tab's main action sits right above the tabs, within thumb reach, and the
-                // content scrolls above it instead of under it.
-                BottomAction(model, tab)
-                // A floating bar: the tabs sit on their own rounded surface instead of a full-width strip.
-                FloatingNavigationBar {
-                    FloatingNavigationBarItem(tab == 0, { go(0) }, MiuixIcons.GridView, TITLES[0])
-                    FloatingNavigationBarItem(tab == 1, { go(1) }, MiuixIcons.Layers, TITLES[1])
-                    FloatingNavigationBarItem(tab == 2, { go(2) }, MiuixIcons.Backup, TITLES[2])
-                    FloatingNavigationBarItem(tab == 3, { go(3) }, MiuixIcons.Settings, TITLES[3])
+    ) { padding ->
+        // The pages run under the floating bar so the blur has something to blur; each list keeps its
+        // last rows clear of the bar through LocalNavInset.
+        Box(Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()).nestedScroll(scroll.nestedScrollConnection)) {
+            CompositionLocalProvider(LocalNavInset provides with(density) { overlayHeight.toDp() }) {
+                Box(Modifier.fillMaxSize().hazeSource(hazeState)) {
+                    // Swipe sideways between tabs, like HyperOS apps.
+                    androidx.compose.foundation.pager.HorizontalPager(pager, beyondViewportPageCount = 1) { page ->
+                        when (page) {
+                            0 -> OrganizeTab(model) { go(3) }
+                            1 -> AppsTab(model)
+                            2 -> BackupTab(model)
+                            else -> SettingsTab(model, activity)
+                        }
+                    }
                 }
             }
-        },
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).nestedScroll(scroll.nestedScrollConnection)) {
-            // Swipe sideways between tabs, like HyperOS apps.
-            androidx.compose.foundation.pager.HorizontalPager(pager, beyondViewportPageCount = 1) { page ->
-                when (page) {
-                    0 -> OrganizeTab(model) { go(3) }
-                    1 -> AppsTab(model)
-                    2 -> BackupTab(model)
-                    else -> SettingsTab(model, activity)
+            Column(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .onSizeChanged { overlayHeight = it.height }
+                    .navigationBarsPadding(),
+            ) {
+                // The tab's main action sits right above the tabs, within thumb reach.
+                BottomAction(model, tab)
+                // Tabs on a blurred, rounded surface over the pages.
+                Box(Modifier.padding(horizontal = 12.dp, vertical = 6.dp).clip(RoundedCornerShape(28.dp))) {
+                    Box(
+                        Modifier.matchParentSize().hazeBlur(
+                            input = HazeInput.Sources(hazeState),
+                            style = HazeBlurStyle { blurRadius(24.dp) },
+                        ),
+                    )
+                    FloatingNavigationBar(color = Color.Transparent) {
+                        FloatingNavigationBarItem(tab == 0, { go(0) }, MiuixIcons.GridView, TITLES[0])
+                        FloatingNavigationBarItem(tab == 1, { go(1) }, MiuixIcons.Layers, TITLES[1])
+                        FloatingNavigationBarItem(tab == 2, { go(2) }, MiuixIcons.Backup, TITLES[2])
+                        FloatingNavigationBarItem(tab == 3, { go(3) }, MiuixIcons.Settings, TITLES[3])
+                    }
                 }
             }
         }
     }
     DiagnosisHost(model, activity)
+    UpdateDialog()
     model.plan?.let { PreviewSheet(model, it) }
 }
 
@@ -249,5 +282,27 @@ fun MessageBubble(text: String?) {
                 style = MiuixTheme.textStyles.body2,
             )
         }
+    }
+}
+
+/** The update window: what's new, then install now or later. Opens when a newer release is found. */
+@Composable
+fun UpdateDialog() {
+    val context = LocalContext.current
+    val latest = Updater.latest ?: return
+    if (!Updater.newer(latest.version, Updater.current(context))) return
+    if (!Updater.dialogOpen) return
+    WindowDialog(
+        show = true,
+        title = "새 버전 ${latest.version}",
+        summary = latest.notes.take(600),
+        onDismissRequest = { Updater.dialogOpen = false },
+    ) {
+        Updater.progress?.let { pr ->
+            Text("받는 중 ${(pr * 100).toInt()}%", Modifier.padding(top = 8.dp), style = MiuixTheme.textStyles.footnote1)
+        }
+        Updater.status?.let { Text(it, Modifier.padding(top = 8.dp), style = MiuixTheme.textStyles.body2) }
+        SheetActions("나중에", { Updater.dialogOpen = false }, "지금 설치", { Updater.install(context) },
+            primaryEnabled = Updater.progress == null)
     }
 }

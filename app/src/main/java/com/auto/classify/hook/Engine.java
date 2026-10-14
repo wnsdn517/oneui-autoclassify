@@ -135,7 +135,8 @@ public final class Engine {
             Diag.ok("grid", Diag.F_ORGANIZE);
             log("앱스 화면 격자 " + g[0] + "x" + g[1]);
         } else {
-            Diag.check("grid", Diag.F_ORGANIZE, false, Diag.WARN, "앱스 화면 격자 크기를 아직 못 읽음 (앱스 화면이 준비되면 다시 읽음)");
+            Diag.check("grid", Diag.F_ORGANIZE, false, Diag.WARN,
+                    "홈 화면 앱 타일 수를 감지하지 못해 4x6으로 가정했어요. 페이지가 밀리거나 의도와 다르게 배치될 수 있어요 (앱스 화면을 열면 다시 읽어요)");
         }
     }
 
@@ -241,6 +242,9 @@ public final class Engine {
                         Diag.failed(Diag.F_ORGANIZE, "layout", t);
                     }
                 }, "AutoClassify-layout").start();
+                break;
+            case "backup":
+                backupNow();
                 break;
             case "restore":
                 restore(arg);
@@ -838,6 +842,33 @@ public final class Engine {
         pendingMoves.add(change);
         main.removeCallbacks(flushMoves);
         main.postDelayed(flushMoves, 1500);
+    }
+
+    /**
+     * "지금 백업": takes a snapshot, unless the newest one already holds this exact layout, in which
+     * case it says so instead of making a duplicate.
+     */
+    private void backupNow() {
+        if (off(Diag.F_BACKUP)) {
+            report("백업 기능이 꺼져 있습니다");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                String latest = backup.latest();
+                if (latest != null && backup.file(latest, "OneUI.db").exists()) {
+                    String same = planner.layoutOf(backup.workingCopy(latest)).toString();
+                    if (same.equals(planner.currentLayout().toString())) {
+                        report("이미 백업되어 있어요 (" + latest + " 시점과 같은 상태)");
+                        return;
+                    }
+                }
+                report("백업을 만들었어요: " + snapshot());
+            } catch (Throwable t) {
+                Diag.failed(Diag.F_BACKUP, "backup", t);
+                report("백업 실패: " + t.getMessage());
+            }
+        }, "AutoClassify-backup").start();
     }
 
     /** A backup of the layout, with the current rules and AI instructions beside it. */

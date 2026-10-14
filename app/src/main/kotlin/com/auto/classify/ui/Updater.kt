@@ -30,6 +30,8 @@ object Updater {
 
     var latest by mutableStateOf<Release?>(null)
         private set
+    /** The update dialog on the main screen: opened when a newer release is found, or from the banner. */
+    var dialogOpen by mutableStateOf(false)
     var checking by mutableStateOf(false)
         private set
     /** 0..1 while downloading, null otherwise. */
@@ -82,6 +84,8 @@ object Updater {
                 Release(o.optString("tag_name").trimStart('v'), o.optString("body"), url, size)
             }.onSuccess {
                 latest = it
+                // A newer release pops the dialog up, so it is not missed on the settings screen.
+                if (newer(it.version, current(app))) dialogOpen = true
                 if (!quiet) status = if (newer(it.version, current(app))) null else "최신 버전이에요 (${current(app)})"
             }.onFailure { if (!quiet) status = it.message ?: "확인 실패" }
             checking = false

@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -57,19 +58,25 @@ private val OPENAI_PRESETS = listOf(
 
 @Composable
 fun SettingsTab(model: AppModel, activity: MainActivity) {
-    LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(bottom = 12.dp)) {
+    LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(bottom = 12.dp + LocalNavInset.current)) {
         item { SmallTitle("화면") }
         item {
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                WindowDropdownPreference(
-                    items = ThemeChoice.names,
-                    selectedIndex = ThemeChoice.values.indexOf(ThemeChoice.mode).coerceAtLeast(0),
-                    title = "테마",
-                    onSelectedIndexChange = {
-                        ThemeChoice.mode = ThemeChoice.values[it]
-                        model.edit({ putString(ThemeChoice.KEY, ThemeChoice.values[it]) }, reload = false)
-                    },
-                )
+                // Three choices side by side: one tap, no popup.
+                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ThemeChoice.values.forEachIndexed { i, value ->
+                        val selected = ThemeChoice.mode == value
+                        TextButton(
+                            ThemeChoice.names[i],
+                            {
+                                ThemeChoice.mode = value
+                                model.edit({ putString(ThemeChoice.KEY, value) }, reload = false)
+                            },
+                            Modifier.weight(1f),
+                            colors = if (selected) ButtonDefaults.textButtonColorsPrimary() else ButtonDefaults.textButtonColors(),
+                        )
+                    }
+                }
             }
         }
         item { SmallTitle("AI 연결") }
@@ -393,14 +400,14 @@ private fun UpdateCard() {
 
 /** Shown at the top of the organize tab when a newer release exists. */
 @Composable
-fun UpdateBanner(openSettings: () -> Unit) {
+fun UpdateBanner() {
     val context = LocalContext.current
     val latest = Updater.latest ?: return
     if (!Updater.newer(latest.version, Updater.current(context))) return
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 6.dp),
         insideMargin = PaddingValues(16.dp),
-        onClick = openSettings,
+        onClick = { Updater.dialogOpen = true },
     ) {
         Text("새 버전 ${latest.version} 이 나왔어요", style = MiuixTheme.textStyles.title4)
             }
