@@ -31,6 +31,8 @@ public final class Config {
     public static final String KEY_AI_PAGES = "ai_pages";
     /** Folder order the AI chose, JSON array of folder names; folders not named follow in their current order. */
     public static final String KEY_AI_ORDER = "ai_order";
+    /** Folder colors the AI chose, JSON {folder: color name or #RRGGBB}. */
+    public static final String KEY_AI_COLORS = "ai_colors";
     /** Notes the AI keeps between requests (one per line); see ai.AiMemo. */
     public static final String KEY_AI_MEMO = "ai_memo";
     /** Packages never touched, one per line. */
@@ -84,8 +86,18 @@ public final class Config {
     /** Signature of the last diagnosis the user dismissed, so it isn't shown again. */
     public static final String KEY_ACKED_HEALTH = "acked_health";
 
+    /**
+     * What the user wrote or chose as instructions: rules, exclusions, folder names, AI notes and memo.
+     * Saved with each backup; restored only when the user asks for it. Runtime state is not in here.
+     */
+    public static final String[] INSTRUCTION_KEYS = {
+            KEY_RULES, KEY_EXCLUDED, KEY_RULE_FOLDERS, KEY_FOLDER_NAMES, KEY_AI_NOTE, KEY_AI_MEMO,
+            KEY_AI_MAP, KEY_AI_PAGES, KEY_AI_ORDER, KEY_AI_COLORS, KEY_UNCLASSIFIED,
+            KEY_UNCLASSIFIED_FOLDER, KEY_UNCLASSIFIED_PAGE, KEY_DETAILED,
+    };
+
     /** One UI Home versions this module was verified on; others get a warning. */
-    public static final String[] TESTED_LAUNCHER_VERSIONS = {"17.0.07.13"};
+    public static final String[] TESTED_LAUNCHER_VERSIONS = {"17.0.07.13", "18.0.07.59"};
 
     /** Broadcast to the launcher. Extras: cmd = reload | reclassify | folders | status. */
     public static final String ACTION_COMMAND = "com.auto.classify.COMMAND";

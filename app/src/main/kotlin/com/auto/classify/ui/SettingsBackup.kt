@@ -75,4 +75,29 @@ object SettingsBackup {
         }
         return count
     }
+
+    /**
+     * Puts back only the rules and AI instructions saved with a launcher snapshot. Used when the user
+     * ticks "지시도 함께 되돌리기" before a restore; everything else in the settings stays as it is.
+     * @return how many instructions were written
+     */
+    fun importInstructions(context: Context, instructions: JSONObject): Int {
+        val ed = Prefs.open(context).edit()
+        var count = 0
+        for (k in Config.INSTRUCTION_KEYS) {
+            val e = instructions.optJSONObject(k) ?: continue
+            when (e.optString("t")) {
+                "b" -> ed.putBoolean(k, e.optBoolean("v"))
+                "i" -> ed.putInt(k, e.optInt("v"))
+                "l" -> ed.putLong(k, e.optLong("v"))
+                "f" -> ed.putFloat(k, e.optDouble("v").toFloat())
+                "s" -> ed.putString(k, e.optString("v"))
+                "S" -> ed.putStringSet(k, e.optJSONArray("v")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet())
+                else -> continue
+            }
+            count++
+        }
+        ed.commit()
+        return count
+    }
 }

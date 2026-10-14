@@ -149,7 +149,7 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                     DirectiveDropdown(model, rules, Directives.D_PLACEMENT, "배치",
                         listOf(Directives.KEEP, Directives.FOLDERS_FIRST, Directives.APPS_FIRST), directives.placement)
                     DirectiveDropdown(model, rules, Directives.D_FOLDER_COLOR, "폴더 색",
-                        listOf(Directives.KEEP, Directives.ICON, Directives.CATEGORY, Directives.RESET), directives.folderColor)
+                        listOf(Directives.KEEP, Directives.ICON, Directives.CATEGORY, Directives.RAINBOW, Directives.RESET), directives.folderColor)
                 }
             }
 

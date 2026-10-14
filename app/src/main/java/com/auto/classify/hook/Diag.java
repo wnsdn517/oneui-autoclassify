@@ -35,26 +35,58 @@ public final class Diag {
     public static final String F_ORGANIZE = "organize";
     public static final String F_BACKUP = "backup";
 
+    private static final String TAG = "AutoClassify";
     private static final int MAX_LINES = 600;
     private static final long MAX_FILE = 256 * 1024;
+
+    private static final long REPEAT_WINDOW_MS = 3000;
 
     private static final ArrayDeque<String> lines = new ArrayDeque<>();
     private static final Map<String, JSONObject> checks = new LinkedHashMap<>();
     private static File file;
+    private static String lastMsg;
+    private static long lastAt;
+    private static int repeats;
 
     private Diag() {
     }
 
-    static synchronized void init(Context context) {
+    /** Opens the log file once; lines logged before this (from the hooks) are written now. */
+    public static synchronized void init(Context context) {
+        if (file != null) return;
         file = new File(context.getFilesDir(), "autoclassify.log");
         for (String l : lines) append(l);
     }
 
+    /** Every line goes to the in-memory buffer, the log file once opened, and logcat (tag AutoClassify). */
     public static synchronized void log(String msg) {
-        String line = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.ROOT).format(new Date()) + " " + msg;
+        long now = System.currentTimeMillis();
+        // The same line again within a few seconds (a burst of identical events) is counted, not repeated.
+        if (msg.equals(lastMsg) && now - lastAt < REPEAT_WINDOW_MS) {
+            repeats++;
+            lastAt = now;
+            return;
+        }
+        flushRepeats();
+        lastMsg = msg;
+        lastAt = now;
+        Log.i(TAG, msg);
+        write(stamp(now) + " " + msg);
+    }
+
+    private static void flushRepeats() {
+        if (repeats > 0) write(stamp(lastAt) + "   ↳ 같은 줄 " + repeats + "번 더");
+        repeats = 0;
+    }
+
+    private static void write(String line) {
         lines.addLast(line);
         while (lines.size() > MAX_LINES) lines.removeFirst();
         if (file != null) append(line);
+    }
+
+    private static String stamp(long at) {
+        return new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.ROOT).format(new Date(at));
     }
 
     private static void append(String line) {
@@ -70,7 +102,8 @@ public final class Diag {
                 w.write(line);
                 w.write('\n');
             }
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            Log.w(TAG, "log file write failed: " + e);
         }
     }
 
@@ -85,7 +118,8 @@ public final class Diag {
                     .put("message", message == null ? "" : message));
         } catch (JSONException ignored) {
         }
-        if (!ok) log("CHECK FAILED [" + severity + "] " + id + ": " + message);
+        if (ok) log("CHECK OK " + id);
+        else log("CHECK FAILED [" + severity + "] " + id + ": " + message);
     }
 
     public static void ok(String id, String feature) {
@@ -108,6 +142,7 @@ public final class Diag {
     }
 
     static synchronized String dump() {
+        flushRepeats();
         StringBuilder sb = new StringBuilder();
         if (file != null) {
             File old = new File(file.getPath() + ".1");

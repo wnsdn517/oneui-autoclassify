@@ -29,8 +29,8 @@ import com.auto.classify.core.Config
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.NavigationBar
-import top.yukonga.miuix.kmp.basic.NavigationBarItem
+import top.yukonga.miuix.kmp.basic.FloatingNavigationBar
+import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
@@ -65,11 +65,12 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
                 // The tab's main action sits right above the tabs, within thumb reach, and the
                 // content scrolls above it instead of under it.
                 BottomAction(model, tab)
-                NavigationBar {
-                NavigationBarItem(tab == 0, { go(0) }, MiuixIcons.GridView, TITLES[0])
-                NavigationBarItem(tab == 1, { go(1) }, MiuixIcons.Layers, TITLES[1])
-                NavigationBarItem(tab == 2, { go(2) }, MiuixIcons.Backup, TITLES[2])
-                NavigationBarItem(tab == 3, { go(3) }, MiuixIcons.Settings, TITLES[3])
+                // A floating bar: the tabs sit on their own rounded surface instead of a full-width strip.
+                FloatingNavigationBar {
+                    FloatingNavigationBarItem(tab == 0, { go(0) }, MiuixIcons.GridView, TITLES[0])
+                    FloatingNavigationBarItem(tab == 1, { go(1) }, MiuixIcons.Layers, TITLES[1])
+                    FloatingNavigationBarItem(tab == 2, { go(2) }, MiuixIcons.Backup, TITLES[2])
+                    FloatingNavigationBarItem(tab == 3, { go(3) }, MiuixIcons.Settings, TITLES[3])
                 }
             }
         },

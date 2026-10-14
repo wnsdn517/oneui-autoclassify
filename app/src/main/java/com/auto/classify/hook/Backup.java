@@ -9,6 +9,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
@@ -24,6 +25,8 @@ final class Backup {
     private static final String[] DBS = {"OneUI.db", "HomeOnly.db", "Easy.db"};
     private static final String[] SUFFIXES = {"", "-wal", "-shm"};
     private static final int KEEP = 10;
+    /** Rules and AI instructions saved with a snapshot; restored only when the user asks for it. */
+    private static final String INSTRUCTIONS = "instructions.json";
 
     private final Context context;
     private final File root;
@@ -33,8 +36,12 @@ final class Backup {
         this.root = new File(context.getFilesDir(), "autoclassify_backup");
     }
 
-    /** @return the snapshot name, e.g. 20261010-031500 */
-    String snapshot() throws IOException {
+    /**
+     * @param instructions the user's rules and AI instructions as JSON (see Config.INSTRUCTION_KEYS),
+     *                     saved next to the layout so a restore can bring them back; null for none
+     * @return the snapshot name, e.g. 20261010-031500
+     */
+    String snapshot(String instructions) throws IOException {
         String name = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
         File dir = new File(root, name);
         if (!dir.mkdirs() && !dir.isDirectory()) throw new IOException("mkdir " + dir);
@@ -44,8 +51,24 @@ final class Backup {
                 if (src.exists()) copy(src, new File(dir, db + sfx));
             }
         }
+        if (instructions != null) {
+            try (OutputStream out = new FileOutputStream(new File(dir, INSTRUCTIONS))) {
+                out.write(instructions.getBytes(StandardCharsets.UTF_8));
+            }
+        }
         prune();
         return name;
+    }
+
+    /** The instructions saved with a snapshot, or null when it has none (older snapshots). */
+    String instructions(String name) {
+        File f = new File(new File(root, name), INSTRUCTIONS);
+        if (!f.exists()) return null;
+        try (InputStream in = new FileInputStream(f)) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     File file(String name, String db) {

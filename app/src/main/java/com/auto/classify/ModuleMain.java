@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.LauncherApps;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
@@ -18,8 +19,13 @@ import com.auto.classify.core.ModuleStatus;
 import com.auto.classify.hook.Diag;
 import com.auto.classify.hook.Engine;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -65,9 +71,13 @@ public class ModuleMain implements IXposedHookLoadPackage {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 if (engine != null) return;
+                // The log file opens here, before the engine, so a failing engine start still leaves a log.
+                Context app = ((Application) param.thisObject).getApplicationContext();
+                Diag.init(app);
+                logEnvironment(app);
                 try {
-                    Context context = ((Application) param.thisObject).getApplicationContext();
-                    engine = new Engine(context, cl, ModuleMain::loadPrefs);
+                    Context context = app;
+                    engine = new Engine(context, cl, ModuleMain::loadPrefs, ModuleMain::instructionsJson);
                     registerCommandReceiver(context);
                     context.registerReceiver(new BroadcastReceiver() {
                         @Override
@@ -87,7 +97,7 @@ public class ModuleMain implements IXposedHookLoadPackage {
         checkSdk(cl);
         hookViewModels(cl);
         loadPrefs(); // sets SingleFolders.enabled before the apps screen loads
-        List<String> single = com.auto.classify.hook.SingleFolders.install(cl);
+        List<String> single = com.auto.classify.hook.SingleFolders.install(cl, lpparam.appInfo.sourceDir);
         if (single.isEmpty()) Diag.ok("hook.single", Diag.F_ORGANIZE);
         else Diag.check("hook.single", Diag.F_ORGANIZE, false, Diag.WARN,
                 "앱 1개짜리 폴더를 유지할 수 없어요 (홈이 다시 시작될 때 풀림): " + String.join(" / ", single));
@@ -256,8 +266,47 @@ public class ModuleMain implements IXposedHookLoadPackage {
         return s;
     }
 
+    /**
+     * The rules and AI instructions from the module's settings, in the same {key: {t, v}} format the
+     * settings app's export uses, so a backup can be restored into the app. Null when unreadable.
+     */
+    static String instructionsJson() {
+        try {
+            XSharedPreferences p = new XSharedPreferences(Config.MODULE_PKG, Config.PREFS);
+            p.reload();
+            Map<String, ?> all = p.getAll();
+            JSONObject root = new JSONObject();
+            for (String key : Config.INSTRUCTION_KEYS) {
+                Object v = all.get(key);
+                JSONObject e = new JSONObject();
+                if (v instanceof Boolean) e.put("t", "b").put("v", v);
+                else if (v instanceof Integer) e.put("t", "i").put("v", v);
+                else if (v instanceof Long) e.put("t", "l").put("v", v);
+                else if (v instanceof Float) e.put("t", "f").put("v", ((Float) v).doubleValue());
+                else if (v instanceof String) e.put("t", "s").put("v", v);
+                else if (v instanceof Set) e.put("t", "S").put("v", new JSONArray((Set<?>) v));
+                else continue;
+                root.put(key, e);
+            }
+            return root.toString();
+        } catch (Throwable t) {
+            Diag.log("지시 읽기 실패 (백업에서 빠짐): " + t);
+            return null;
+        }
+    }
+
+    private static void logEnvironment(Context context) {
+        String launcher;
+        try {
+            launcher = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            launcher = "?";
+        }
+        log("환경: One UI 홈 " + launcher + " · " + Build.MODEL + " · Android " + Build.VERSION.RELEASE
+                + " (SDK " + Build.VERSION.SDK_INT + ") · " + Build.FINGERPRINT);
+    }
+
     public static void log(String msg) {
-        Log.i(TAG, msg);
         Diag.log(msg);
         XposedBridge.log(TAG + ": " + msg);
     }

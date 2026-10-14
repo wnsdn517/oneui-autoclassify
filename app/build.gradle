@@ -11,8 +11,8 @@ android {
         applicationId 'com.auto.classify'
         minSdk 35
         targetSdk 35
-        versionCode 54
-        versionName '0.19.0'
+        versionCode 55
+        versionName '0.19.1'
     }
 
     buildTypes {
@@ -42,4 +42,6 @@ dependencies {
     implementation 'top.yukonga.miuix.kmp:miuix-icons:0.9.4'
     implementation 'androidx.activity:activity-compose:1.13.0'
     compileOnly 'de.robv.android.xposed:api:82'
+    // Finds obfuscated launcher classes/methods by strings and signatures (https://github.com/LuckyPray/DexKit)
+    implementation 'org.luckypray:dexkit:2.0.0'
 }

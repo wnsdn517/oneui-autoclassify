@@ -23,7 +23,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** A backup snapshot as reported by the launcher. */
-data class BackupInfo(val name: String, val layout: JSONObject?)
+/** A launcher snapshot. [instructions] is the rules and AI instructions saved with it, null for older ones. */
+data class BackupInfo(val name: String, val layout: JSONObject?, val instructions: JSONObject?)
 
 /**
  * Screen state and the broadcast link to the hooked launcher. Lives as long as the activity;
@@ -224,7 +225,7 @@ class AppModel(private val context: Context) {
                         val arr = JSONArray(payload)
                         (0 until arr.length()).map {
                             val o = arr.getJSONObject(it)
-                            BackupInfo(o.getString("name"), o.optJSONObject("layout"))
+                            BackupInfo(o.getString("name"), o.optJSONObject("layout"), o.optJSONObject("instructions"))
                         }
                     }.getOrDefault(emptyList())
                 }
@@ -585,11 +586,14 @@ class AppModel(private val context: Context) {
             val base = renames.entries.firstOrNull { it.value == old }?.key ?: old
             renames[base] = new
         }
+        val aiColors = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_COLORS, ""))
+            .mapKeys { (f, _) -> names[f] ?: f }
         val order = JSONArray(savedOrder().map { names[it] ?: it })
         edit({
             putString(Config.KEY_AI_ORDER, order.toString())
             putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(ai))
             putString(Config.KEY_AI_PAGES, JSONObject(aiPages as Map<*, *>).toString())
+            putString(Config.KEY_AI_COLORS, JSONObject(aiColors as Map<*, *>).toString())
             putString(Config.KEY_RULES, rules)
             putString(Config.KEY_FOLDER_NAMES, renames.entries.joinToString("\n") { "${it.key}=${it.value}" })
         })
@@ -643,6 +647,36 @@ class AppModel(private val context: Context) {
     /** What to tell the user when the AI changed settings on request; null when it changed none. */
     private fun optionsNotice(changes: List<String>): String? =
         if (changes.isEmpty()) null else "AI가 요청대로 설정을 바꿨어요\n" + changes.joinToString("\n") { "• $it" }
+
+    /**
+     * Saves the layout settings (!폴더색 …) and folder colors the AI asked for. Colors of folders
+     * it renamed move to the new name; returns what changed, for the reply.
+     */
+    private fun applyLook(plan: com.auto.classify.ai.AiOrganizer.Plan): List<String> {
+        val out = ArrayList<String>()
+        var rules = prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
+        for (line in plan.settings) {
+            val body = line.removePrefix("!").trim()
+            val next = setDirective(rules, body.substringBefore(' '), body.substringAfter(' ').trim())
+            if (next != rules) out.add("설정 변경: ${body.replaceFirst(" ", " → ")}")
+            rules = next
+        }
+        val colors = LinkedHashMap<String, String>()
+        com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_COLORS, "")).forEach { (f, c) ->
+            colors[plan.renamed[f] ?: f] = c
+        }
+        for ((f, c) in plan.colors) {
+            if (colors[f] != c) out.add("폴더 색: $f → $c")
+            if (com.auto.classify.core.FolderColors.parse(c) == com.auto.classify.core.FolderColors.DEFAULT) colors.remove(f) else colors[f] = c
+        }
+        if (out.isNotEmpty() || plan.renamed.isNotEmpty()) {
+            edit({
+                putString(Config.KEY_RULES, rules)
+                putString(Config.KEY_AI_COLORS, JSONObject(colors as Map<*, *>).toString())
+            })
+        }
+        return out
+    }
 
     /** The folder order the AI chose earlier, as a list of names. */
     private fun savedOrder(): List<String> = runCatching {
@@ -760,28 +794,24 @@ class AppModel(private val context: Context) {
                     }
                     val (changed, memoChanges) = applyExtras(plan.options, plan.memoAdd, plan.memoRemove)
                     optionsNotice(changed)?.let { toast(it) }
+                    // Layout settings (!폴더색 …) and folder colors apply whether or not folders change.
+                    val look = applyLook(plan)
                     if (plan.assign.isEmpty()) {
-                        // No folder change: a reply to a question, a settings change or a note.
+                        // No folder change: a reply to a question, a settings change, colors or a note.
                         remember(asked, listOf(plan.answer, plan.note, changed.joinToString("\n") { "설정 변경: $it" },
-                            memoChanges.joinToString("\n")).filter { it.isNotBlank() }.joinToString("\n"))
-                        if (changed.isNotEmpty()) request("plan")
+                            look.joinToString("\n"), memoChanges.joinToString("\n")).filter { it.isNotBlank() }.joinToString("\n"))
+                        if (changed.isNotEmpty() || look.isNotEmpty()) request("plan")
                         return@onSuccess
                     }
                     setMode(Config.MODE_AI)
-                    var rules = prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
-                    for (line in plan.settings) {
-                        val key = line.removePrefix("!").trim().substringBefore(' ')
-                        rules = setDirective(rules, key, line.removePrefix("!").trim().substringAfter(' ').trim())
-                    }
                     edit({
                         putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(plan.assign))
                         putString(Config.KEY_AI_NOTE, plan.note)
                         putString(Config.KEY_AI_PAGES, org.json.JSONObject(plan.pages as Map<*, *>).toString())
                         putString(Config.KEY_AI_ORDER, JSONArray(plan.folderOrder).toString())
-                        putString(Config.KEY_RULES, rules)
                     })
                     remember(asked, listOf(plan.answer, plan.note, changed.joinToString("\n") { "설정 변경: $it" },
-                        memoChanges.joinToString("\n")).filter { it.isNotBlank() }.joinToString("\n"))
+                        look.joinToString("\n"), memoChanges.joinToString("\n")).filter { it.isNotBlank() }.joinToString("\n"))
                     request("plan")
                 }.onFailure { aiError = "AI 실패: ${it.message}" }
             }

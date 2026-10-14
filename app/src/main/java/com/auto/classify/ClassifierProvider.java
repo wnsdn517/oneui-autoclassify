@@ -209,6 +209,7 @@ public class ClassifierProvider extends ContentProvider {
         } else if (Config.MODE_AI.equals(mode)) {
             Map<String, String> ai = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_MAP, ""));
             Map<String, String> aiPages = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_PAGES, ""));
+            Map<String, String> aiColors = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_COLORS, ""));
             for (int i = 0; i < pkgs.length; i++) {
                 if (excluded.contains(pkgs[i])) continue;
                 String pk = pkgs[i];
@@ -221,6 +222,7 @@ public class ClassifierProvider extends ContentProvider {
                     // A hand-picked place names the folder; unless it names a page too, the AI's page for that folder applies.
                     pages[i] = hit.page > 0 ? hit.page : aiPageOf(aiPages, hit.folder);
                     if (hit.color != null) colors[i] = hit.color;
+                    else colors[i] = aiColorOf(aiColors, hit.folder);
                     continue;
                 }
                 String folder = ai.get(pk);
@@ -234,6 +236,7 @@ public class ClassifierProvider extends ContentProvider {
                 targets[i] = folder;
                 reasons[i] = why;
                 pages[i] = aiPageOf(aiPages, folder);
+                colors[i] = aiColorOf(aiColors, folder);
             }
         } else {
             Set<String> signals = new HashSet<>();
@@ -316,6 +319,12 @@ public class ClassifierProvider extends ContentProvider {
             out.putLongArray("installed", times);
         }
         return out;
+    }
+
+    /** The color the AI chose for a folder, or NO_COLOR. */
+    private static int aiColorOf(Map<String, String> aiColors, String folder) {
+        Integer c = folder == null ? null : com.auto.classify.core.FolderColors.parse(aiColors.get(folder));
+        return c == null ? NO_COLOR : c;
     }
 
     /** The page the AI chose for a folder (or for Classifier.LOOSE); 0 = none. */

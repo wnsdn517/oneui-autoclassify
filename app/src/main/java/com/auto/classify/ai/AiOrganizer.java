@@ -46,6 +46,8 @@ public final class AiOrganizer {
         /** Notes to keep for later requests, and note fragments to forget (see AiMemo). */
         public final List<String> memoAdd = new ArrayList<>();
         public final List<String> memoRemove = new ArrayList<>();
+        /** Colors the answer gave particular folders: folder -> color name or #RRGGBB (valid per FolderColors.parse). */
+        public final Map<String, String> colors = new LinkedHashMap<>();
         /** Folders the answer renamed: old name -> new name. */
         public final Map<String, String> renamed = new LinkedHashMap<>();
         /** True for a follow-up (refine): pages and order the answer omits are kept from before. */
@@ -58,7 +60,7 @@ public final class AiOrganizer {
             "Answer with one JSON object only:\n"
                     + "{\"answer\":\"\", \"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
                     + "\"loose_page\":0, \"moves\":[{\"apps\":[app numbers],\"to\":\"폴더 이름 or (폴더밖)\",\"page\":0}], \"dissolve\":[\"폴더 이름\"], "
-                    + "\"rename\":{\"지금 이름\":\"새 이름\"}, "
+                    + "\"rename\":{\"지금 이름\":\"새 이름\"}, \"folder_colors\":{\"폴더 이름\":\"빨강\"}, "
                     + "\"folder_order\":[\"폴더 이름\"], \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"memo_add\":[\"짧은 메모\"], \"memo_remove\":[\"지울 메모의 일부\"], \"note\":\"짧은 한국어 요약\"}\n"
                     + "- moves / dissolve / rename change only what they name; every other app keeps its current place. Use them for "
                     + "small changes: moves = put these apps in that folder (\"(폴더밖)\" = outside folders), dissolve = break these "
@@ -86,7 +88,11 @@ public final class AiOrganizer {
                     + "  !앱정렬 이름|색상|설치일       (order of apps outside folders)\n"
                     + "  !폴더정렬 이름|색상|앱수       (order of folders)\n"
                     + "  !배치 폴더먼저|앱먼저\n"
-                    + "  !폴더색 아이콘|카테고리|기본\n"
+                    + "  !폴더색 아이콘|카테고리|알록달록|기본   (아이콘 = each folder takes its apps' icon color, 카테고리 = by category "
+                    + "name, 알록달록 = every folder a different color in rainbow order, 기본 = no color)\n"
+                    + "- folder_colors: when the user names colors for particular folders (\"게임 폴더는 빨간색\"), folder name -> "
+                    + "빨강|주황|노랑|초록|청록|파랑|보라|분홍|회색|흰색|검정|기본 or #RRGGBB. These win over !폴더색. For a request about "
+                    + "all folders at once (알록달록, 화려하게, 색 다르게) use the !폴더색 setting instead.\n"
                     + "- folder_order: the folder names in the order they should appear on the apps screen, when the user cares about "
                     + "the order of folders (e.g. most used first, alphabetical, a given sequence). Leave it empty to keep the current order. "
                     + "Only folders listed in folders belong here.\n"
@@ -367,7 +373,8 @@ public final class AiOrganizer {
 
     /** True when the answer changes nothing at all although it wasn't a question: it only talked about a change. */
     private static boolean onlyTalk(Plan p, Map<String, String> assign, Map<String, Integer> pages, List<String> order) {
-        if (!p.answer.isEmpty() || !p.options.isEmpty() || !p.settings.isEmpty() || !p.memoAdd.isEmpty() || !p.memoRemove.isEmpty()) {
+        if (!p.answer.isEmpty() || !p.options.isEmpty() || !p.settings.isEmpty() || !p.colors.isEmpty()
+                || !p.memoAdd.isEmpty() || !p.memoRemove.isEmpty()) {
             return false;
         }
         if (p.note.trim().isEmpty()) return false;
@@ -538,6 +545,12 @@ public final class AiOrganizer {
                 if (!name.isEmpty() && name.equals(e.getValue())) p.assign.putIfAbsent(e.getKey(), Classifier.LOOSE);
             }
         }
+        JSONObject colors = o.optJSONObject("folder_colors");
+        for (java.util.Iterator<String> it = colors == null ? null : colors.keys(); it != null && it.hasNext(); ) {
+            String folder = it.next().trim();
+            String c = colors.optString(folder).trim();
+            if (!folder.isEmpty() && com.auto.classify.core.FolderColors.parse(c) != null) p.colors.put(folder, c);
+        }
         JSONArray settings = o.optJSONArray("settings");
         for (int i = 0; settings != null && i < settings.length(); i++) {
             String line = settings.optString(i).trim();
@@ -566,6 +579,7 @@ public final class AiOrganizer {
         p.answer = o.optString("answer").trim();
         p.note = o.optString("note");
         if (p.assign.isEmpty() && p.answer.isEmpty() && p.note.trim().isEmpty() && p.options.isEmpty() && p.settings.isEmpty()
+                && p.colors.isEmpty()
                 && p.memoAdd.isEmpty() && p.memoRemove.isEmpty()) throw new IllegalStateException("AI 답에서 폴더를 읽지 못했어요");
         return p;
     }

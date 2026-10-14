@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -874,6 +875,39 @@ private fun RuleDialog(
     }
 }
 
+/**
+ * One past AI answer: when and what was asked on top, the answer folded to a few lines until tapped,
+ * so a long history stays scannable.
+ */
+@Composable
+private fun AiHistoryEntry(time: String, request: String, text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    val long = text.length > 160 || text.count { it == '\n' } > 3
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp)
+            .then(if (long) Modifier.clickable { expanded = !expanded } else Modifier),
+    ) {
+        Text(
+            time + (if (request.isBlank()) "" else " · " + request.replace('\n', ' ')),
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text,
+            Modifier.fillMaxWidth().padding(top = 2.dp),
+            style = MiuixTheme.textStyles.body2,
+            maxLines = if (expanded || !long) Int.MAX_VALUE else 4,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (long) {
+            Text(if (expanded) "접기" else "펼치기", style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.primary, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
 /** The AI's latest reply or summary, and the earlier ones on demand. */
 @Composable
 fun AiReply(model: AppModel) {
@@ -892,10 +926,7 @@ fun AiReply(model: AppModel) {
     if (open) {
         val fmt = remember { java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.KOREA) }
         for (e in past) {
-            Text(fmt.format(java.util.Date(e.time)) + (if (e.request.isBlank()) "" else " · " + e.request.take(60)),
-                Modifier.padding(top = 8.dp), style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-            Text(e.text, Modifier.fillMaxWidth(), style = MiuixTheme.textStyles.body2)
+            AiHistoryEntry(fmt.format(java.util.Date(e.time)), e.request, e.text)
         }
         Text("기록 지우기", Modifier.fillMaxWidth().clickable { model.clearAiHistory() }.padding(vertical = 8.dp),
             color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.body2)

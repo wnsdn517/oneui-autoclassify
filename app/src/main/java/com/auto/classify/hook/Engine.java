@@ -17,6 +17,7 @@ import com.auto.classify.core.Config;
 import com.auto.classify.core.Directives;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -74,6 +75,8 @@ public final class Engine {
     private final Context context;
     private final ClassLoader cl;
     private final Supplier<Settings> settingsLoader;
+    /** The user's rules and AI instructions as JSON, saved with every backup. */
+    private final Supplier<String> instructionsLoader;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Tracker tracker;
     private final Backup backup;
@@ -83,10 +86,12 @@ public final class Engine {
     private volatile LauncherBridge bridge;
     private Object dataSource;
 
-    public Engine(Context context, ClassLoader cl, Supplier<Settings> settingsLoader) {
+    public Engine(Context context, ClassLoader cl, Supplier<Settings> settingsLoader,
+                  Supplier<String> instructionsLoader) {
         this.context = context;
         this.cl = cl;
         this.settingsLoader = settingsLoader;
+        this.instructionsLoader = instructionsLoader;
         this.tracker = new Tracker(context.getFilesDir());
         this.backup = new Backup(context);
         this.planner = new Planner(context);
@@ -286,7 +291,7 @@ public final class Engine {
         }
         new Thread(() -> {
             try {
-                String snap = off(Diag.F_BACKUP) ? "없음" : backup.snapshot();
+                String snap = off(Diag.F_BACKUP) ? "없음" : snapshot();
                 Planner.Plan plan = planner.apply(this::targets, settings.createFolders, settings.minApps);
                 if (plan.isEmpty()) {
                     report("이미 정리되어 있습니다");
@@ -311,7 +316,7 @@ public final class Engine {
         }
         new Thread(() -> {
             try {
-                String snap = off(Diag.F_BACKUP) ? "없음" : backup.snapshot();
+                String snap = off(Diag.F_BACKUP) ? "없음" : snapshot();
                 int n = planner.applyLayout(new JSONObject(json));
                 report("직접 배치한 대로 적용했습니다 (앱 " + n + "개 이동, 백업 " + snap + "). 홈을 다시 시작합니다");
                 main.postDelayed(() -> Process.killProcess(Process.myPid()), 400);
@@ -335,6 +340,12 @@ public final class Engine {
                     JSONObject o = new JSONObject().put("name", names[i]);
                     File db = backup.file(names[i], "OneUI.db");
                     if (db.exists()) o.put("layout", planner.layoutOf(backup.workingCopy(names[i])));
+                    String instructions = backup.instructions(names[i]);
+                    try {
+                        if (instructions != null) o.put("instructions", new JSONObject(instructions));
+                    } catch (JSONException broken) {
+                        Diag.log("백업 지시 파일을 읽지 못함: " + names[i]);
+                    }
                     list.put(o);
                 }
                 reply(Config.ACTION_BACKUPS, list.toString());
@@ -356,7 +367,7 @@ public final class Engine {
             return;
         }
         try {
-            String safety = backup.snapshot(); // so the restore itself can be undone
+            String safety = snapshot(); // so the restore itself can be undone
             report(target + " 시점으로 되돌립니다 (현재 상태는 " + safety + "에 백업). 홈을 다시 시작합니다");
         } catch (Exception e) {
             report("현재 상태 백업 실패로 되돌리기를 중단했습니다: " + e.getMessage());
@@ -411,7 +422,7 @@ public final class Engine {
                         return;
                     }
                 }
-                String snap = off(Diag.F_BACKUP) ? "없음" : backup.snapshot();
+                String snap = off(Diag.F_BACKUP) ? "없음" : snapshot();
                 planner.apply(this::targets, settings.createFolders, settings.minApps);
                 log("화면 꺼짐 정리: " + apps(mine) + " 페이지 맞춤 (백업 " + snap + ")");
                 main.postDelayed(() -> Process.killProcess(Process.myPid()), 300);
@@ -804,7 +815,7 @@ public final class Engine {
                     return;
                 }
                 String change = tracker.onItemUpdated(cn.getPackageName(), itemId, inFolder);
-                if (change != null) log(change);
+                if (change != null) queueMove(change.replace(cn.getPackageName(), app(cn.getPackageName())));
             } catch (Throwable t) {
                 log("앱 위치 추적 실패: " + t);
             }
@@ -812,6 +823,27 @@ public final class Engine {
     }
 
     // ---- helpers ------------------------------------------------------------------------
+
+    /** Move reports from one burst of launcher writes go out as one summary line, not one line each. */
+    private final List<String> pendingMoves = new ArrayList<>();
+    private final Runnable flushMoves = () -> {
+        int n = pendingMoves.size();
+        if (n == 0) return;
+        String shown = String.join(" · ", pendingMoves.subList(0, Math.min(3, n)));
+        log("앱 위치 변경 " + n + "건: " + shown + (n > 3 ? " 외 " + (n - 3) + "건" : ""));
+        pendingMoves.clear();
+    };
+
+    private void queueMove(String change) {
+        pendingMoves.add(change);
+        main.removeCallbacks(flushMoves);
+        main.postDelayed(flushMoves, 1500);
+    }
+
+    /** A backup of the layout, with the current rules and AI instructions beside it. */
+    private String snapshot() throws java.io.IOException {
+        return backup.snapshot(instructionsLoader.get());
+    }
 
     private void report(String msg) {
         log(msg);

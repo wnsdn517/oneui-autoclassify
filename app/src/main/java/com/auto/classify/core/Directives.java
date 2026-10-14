@@ -9,7 +9,7 @@ package com.auto.classify.core;
  *   !폴더정렬 이름|앱수|그대로             order of folders among themselves
  *   !배치 폴더먼저|앱먼저|그대로           folders before loose apps, or the reverse
  *   !최소앱 N                              apps needed before a new folder is made
- *   !폴더색 아이콘|카테고리|기본|그대로     color folders by their apps' icons, by category, or reset
+ *   !폴더색 아이콘|카테고리|알록달록|기본|그대로  color folders by their apps' icons, by category, each differently, or reset
  */
 public final class Directives {
 
@@ -22,6 +22,8 @@ public final class Directives {
     public static final String ICON = "아이콘";
     public static final String CATEGORY = "카테고리";
     public static final String RESET = "기본";
+    /** Every folder a different color, in rainbow order. */
+    public static final String RAINBOW = "알록달록";
     public static final String APPS_FIRST = "앱먼저";
 
     public static final String D_INSIDE = "폴더안정렬";
@@ -100,7 +102,7 @@ public final class Directives {
             case D_MIN_APPS:
                 return v.matches("\\d+") && Integer.parseInt(v) >= 1 ? null : "!최소앱 뒤에는 1 이상의 숫자가 와야 합니다";
             case D_FOLDER_COLOR:
-                return oneOf(key, v, ICON, CATEGORY, RESET, KEEP);
+                return oneOf(key, v, ICON, CATEGORY, RAINBOW, RESET, KEEP);
             default:
                 return "알 수 없는 지시문 '!" + key + "' (가능: !폴더안정렬, !앱정렬, !폴더정렬, !배치, !최소앱, !폴더색)";
         }

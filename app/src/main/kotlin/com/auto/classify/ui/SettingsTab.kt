@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import top.yukonga.miuix.kmp.icon.extended.Search
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,6 +42,7 @@ import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowBottomSheet
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import java.text.SimpleDateFormat
@@ -89,11 +92,57 @@ fun SettingsTab(model: AppModel, activity: MainActivity) {
                     model.requestHealth()
                     model.showDiagnosis = true
                 })
+                LogPreview(model)
                 ArrowPreference("로그 내보내기", onClick = { activity.exportLogs() })
             }
         }
     }
 }
+
+/**
+ * The launcher's recent log in the app, so a problem can be read without exporting it. Opens on
+ * "문제만": only lines about failures, hooks that didn't match, or warnings.
+ */
+@Composable
+private fun LogPreview(model: AppModel) {
+    var text by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    ArrowPreference("최근 로그 보기", summary = if (loading) "가져오는 중…" else null, onClick = {
+        loading = true
+        model.requestLogs { got ->
+            loading = false
+            text = got ?: "로그를 가져오지 못했어요 (One UI 홈이 응답하지 않아요)"
+        }
+    })
+    text?.let { LogSheet(it) { text = null } }
+}
+
+@Composable
+private fun LogSheet(raw: String, onClose: () -> Unit) {
+    var problemsOnly by remember { mutableStateOf(true) }
+    val lines = remember(raw) { raw.lines().filter { it.isNotBlank() }.takeLast(600) }
+    val shown = (if (problemsOnly) lines.filter(::isProblemLine) else lines).takeLast(200)
+    WindowBottomSheet(show = true, title = "최근 로그 (${if (problemsOnly) "문제만" else "전체"} ${shown.size}줄)", onDismissRequest = onClose) {
+        Column {
+            Row {
+                TextButton(if (problemsOnly) "전체 보기" else "문제만 보기", { problemsOnly = !problemsOnly },
+                    Modifier.weight(1f))
+            }
+            if (shown.isEmpty()) {
+                Text("표시할 줄이 없어요", Modifier.padding(16.dp), style = MiuixTheme.textStyles.body2)
+            }
+            LazyColumn(Modifier.heightIn(max = 560.dp)) {
+                items(shown) { line ->
+                    Text(line, Modifier.fillMaxWidth().padding(vertical = 2.dp), style = MiuixTheme.textStyles.footnote1,
+                        color = if (isProblemLine(line)) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
+            }
+        }
+    }
+}
+
+private fun isProblemLine(line: String): Boolean =
+    listOf("FAILED", "실패", "오류", "ERROR", "WARN", "없음", "못", "거부", "꺼짐", "보류").any { line.contains(it) }
 
 @Composable
 private fun AiConnection(model: AppModel) {

@@ -287,11 +287,13 @@ final class OfflineRules {
         return true;
     }
 
-    /** "폴더 색은 아이콘 색으로 / 카테고리별로 / 기본으로". */
+    /** "폴더 색은 아이콘 색으로 / 카테고리별로 / 알록달록하게 / 기본으로". */
     private static boolean folderColorDirective(String lc, Set<String> out) {
         if (!(lc.contains("폴더 색") || lc.contains("폴더색") || lc.contains("폴더 컬러") || lc.contains("폴더들 색")
                 || lc.contains("폴더의 색"))) return false;
-        String v = lc.contains("아이콘") || lc.contains("앱 색") ? Directives.ICON
+        String v = lc.contains("알록달록") || lc.contains("다채") || lc.contains("화려") || lc.contains("무지개")
+                || lc.contains("다르게") || lc.contains("다양") ? Directives.RAINBOW
+                : lc.contains("아이콘") || lc.contains("앱 색") ? Directives.ICON
                 : lc.contains("카테고리") || lc.contains("분류별") ? Directives.CATEGORY
                 : lc.contains("기본") || lc.contains("초기화") || lc.contains("지워") || lc.contains("없애") ? Directives.RESET
                 : null;

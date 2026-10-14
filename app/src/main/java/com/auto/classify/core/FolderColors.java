@@ -76,6 +76,13 @@ public final class FolderColors {
         return NAMES.get(name);
     }
 
+    private static final String[] RAINBOW = {"빨강", "주황", "노랑", "초록", "청록", "파랑", "보라", "분홍"};
+
+    /** The i-th folder's color for "!폴더색 알록달록": rainbow order, repeating. */
+    public static int rainbow(int i) {
+        return NAMES.get(RAINBOW[Math.floorMod(i, RAINBOW.length)]);
+    }
+
     public static String[] names() {
         return NAMES.keySet().toArray(new String[0]);
     }

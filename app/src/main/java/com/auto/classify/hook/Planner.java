@@ -719,11 +719,21 @@ final class Planner {
     private void colorFolders(Plan plan) {
         Targets t = plan.targets;
         String mode = t == null ? Directives.KEEP : t.directives.folderColor;
-        for (Row f : folders.values()) {
+        // Folders in screen order, so "알록달록" runs through the rainbow as you scroll.
+        List<Row> ordered = new ArrayList<>();
+        for (int page : pages) {
+            for (Row r : top.getOrDefault(page, new ArrayList<>())) if (folders.containsKey(r.id)) ordered.add(r);
+        }
+        for (Row f : folders.values()) if (!ordered.contains(f)) ordered.add(f);
+        int rainbow = 0;
+        for (Row f : ordered) {
             String title = f.title == null ? "" : f.title.trim();
             Integer c = plan.ruleColors.get(title);
             if (c == null) {
                 switch (mode) {
+                    case Directives.RAINBOW:
+                        c = com.auto.classify.core.FolderColors.rainbow(rainbow++);
+                        break;
                     case Directives.RESET:
                         c = com.auto.classify.core.FolderColors.DEFAULT;
                         break;

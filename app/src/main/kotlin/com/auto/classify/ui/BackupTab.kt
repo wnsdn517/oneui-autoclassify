@@ -26,6 +26,7 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
@@ -61,6 +62,8 @@ fun BackupTab(model: AppModel) {
 @Composable
 private fun BackupSheet(model: AppModel, b: BackupInfo, onClose: () -> Unit) {
     var confirm by remember { mutableStateOf(false) }
+    // Off unless the user asks: a restore brings back the layout only, unless this is ticked.
+    var withInstructions by remember { mutableStateOf(false) }
     WindowBottomSheet(show = true, title = prettyTime(b.name), onDismissRequest = onClose) {
         Column(Modifier.heightIn(max = 700.dp)) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
@@ -74,9 +77,19 @@ private fun BackupSheet(model: AppModel, b: BackupInfo, onClose: () -> Unit) {
         WindowDialog(show = true, title = "이 시점으로 되돌릴까요?",
             summary = "지금 상태도 백업해 둬요",
             onDismissRequest = { confirm = false }) {
+            if (b.instructions != null) {
+                SwitchPreference(checked = withInstructions, onCheckedChange = { withInstructions = it },
+                    title = "지시도 함께 되돌리기", summary = "규칙·제외·AI 지시를 이 백업 때 값으로 바꿔요")
+            } else {
+                Hint("이 백업에는 지시가 없어요 (지시 저장 전에 만든 백업)")
+            }
             SheetActions("취소", { confirm = false }, "되돌리기", {
                 confirm = false
                 onClose()
+                val instructions = b.instructions
+                if (withInstructions && instructions != null) {
+                    SettingsBackup.importInstructions(model.appContext, instructions)
+                }
                 model.request("restore", b.name)
             })
         }
