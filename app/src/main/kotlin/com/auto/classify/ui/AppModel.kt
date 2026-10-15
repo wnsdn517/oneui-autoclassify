@@ -187,6 +187,7 @@ class AppModel(private val context: Context) {
 
     private var pendingTimeout: Runnable? = null
     private var backupPending = false
+    private var restartFallback: (() -> Unit)? = null
     private var healthTimeout: Runnable? = null
     private var logsCallback: ((String?) -> Unit)? = null
     private var logsTimeout: Runnable? = null
@@ -250,6 +251,11 @@ class AppModel(private val context: Context) {
                     clearPending()
                     messages.tryEmit(payload)
                     requestHealth() // runtime failures are recorded by the launcher
+                    if (restartFallback != null) {
+                        // Home answered the restart; it comes back in a few seconds, then read its health.
+                        restartFallback = null
+                        main.postDelayed({ requestHealth() }, 5000)
+                    }
                     // The backup list is asked for only after the launcher answers, so it includes the new snapshot.
                     if (backupPending) {
                         backupPending = false
@@ -292,6 +298,15 @@ class AppModel(private val context: Context) {
         request("backup")
     }
 
+    /**
+     * Asks Home to end its own process, so the system starts it again with the newest hook. If Home
+     * doesn't answer (it still runs an older hook, which doesn't know the command), [fallback] runs.
+     */
+    fun restartHome(fallback: () -> Unit) {
+        restartFallback = fallback
+        request("restart")
+    }
+
     fun request(cmd: String, arg: String? = null) {
         clearPending()
         busy = true
@@ -299,6 +314,11 @@ class AppModel(private val context: Context) {
             busy = false
             backupPending = false
             note("요청 '$cmd' 응답 없음")
+            if (cmd == "restart") {
+                restartFallback?.invoke()
+                restartFallback = null
+                return@Runnable
+            }
             // After an app update the home keeps the old hook code until it restarts, so it ignores new commands.
             messages.tryEmit("One UI 홈이 응답하지 않아요. 앱을 업데이트했다면 One UI 홈을 재시작해 주세요 (LSPosed에서 범위가 맞는지도 확인)")
             requestHealth()

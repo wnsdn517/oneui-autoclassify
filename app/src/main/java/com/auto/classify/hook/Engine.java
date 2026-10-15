@@ -246,6 +246,11 @@ public final class Engine {
             case "backup":
                 backupNow();
                 break;
+            case "restart":
+                // Ends this Home process; the system starts Home again, with the newest hook loaded.
+                report("One UI 홈을 다시 시작합니다");
+                main.postDelayed(() -> android.os.Process.killProcess(android.os.Process.myPid()), 400);
+                break;
             case "restore":
                 restore(arg);
                 break;

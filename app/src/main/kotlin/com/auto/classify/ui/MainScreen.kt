@@ -247,6 +247,17 @@ fun DiagnosisHost(model: AppModel, activity: MainActivity) {
         onDismissRequest = if (d.level == Diagnosis.Level.FATAL) null else close,
     ) {
         Column {
+            // Loads a new hook build. Home ends its own process (no root needed); if Home doesn't answer,
+            // root restarts it, or Home's app info opens for a manual force stop.
+            TextButton("One UI 홈 재시작", {
+                model.restartHome {
+                    Thread {
+                        model.messages.tryEmit(HomeRestart.restart(context))
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ model.requestHealth() }, 5000)
+                    }.start()
+                }
+            }, Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
             TextButton("로그 내보내기", { activity.exportLogs() }, Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
