@@ -70,13 +70,11 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(top = LocalTopInset.current, bottom = 12.dp + LocalNavInset.current)) {
             item { RiskBanner(model) { model.showDiagnosis = true } }
             item { UpdateBanner() }
-            item {
+            // The explanation card is gone; it only shows when the module is off, as a warning.
+            if (!model.moduleActive) item {
                 Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 6.dp, bottom = 12.dp),
                     insideMargin = PaddingValues(16.dp)) {
-                    Text(
-                        if (!model.moduleActive) "모듈 비활성 · LSPosed에서 켜 주세요" else basis(model),
-                        style = MiuixTheme.textStyles.title4,
-                    )
+                    Text("모듈 비활성 · LSPosed에서 켜 주세요", style = MiuixTheme.textStyles.title4)
                 }
             }
 

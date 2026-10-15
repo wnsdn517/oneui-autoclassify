@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -252,24 +253,39 @@ private fun AiConnection(model: AppModel) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
     )
     if (models.isNotEmpty()) {
-        // Models that can search the web carry a small search icon; the rest show nothing.
-        val searchIcon: @Composable (Modifier) -> Unit = { m ->
-            top.yukonga.miuix.kmp.basic.Icon(top.yukonga.miuix.kmp.icon.MiuixIcons.Search, "웹 검색 가능",
-                m.padding(end = 8.dp).size(18.dp), tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        // A plain list in a sheet, so the web-search mark can sit on the right of the model name.
+        var pickingModel by remember { mutableStateOf(false) }
+        ArrowPreference("모델", summary = modelName.ifBlank { "모델을 고르세요" }, onClick = { pickingModel = true })
+        if (pickingModel) {
+            WindowBottomSheet(show = true, title = "모델", onDismissRequest = { pickingModel = false }) {
+                LazyColumn(Modifier.heightIn(max = 520.dp)) {
+                    items(models) { m ->
+                        val note = notes[m].orEmpty()
+                        val selected = m == modelName
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                modelName = m
+                                save()
+                                pickingModel = false
+                            }.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(m, style = MiuixTheme.textStyles.main,
+                                    color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface)
+                                note.replace(ApiLlm.NOTE_SEARCH, "").trim().takeIf { it.isNotEmpty() }?.let {
+                                    Text(it, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                }
+                            }
+                            if (note.contains(ApiLlm.NOTE_SEARCH)) {
+                                top.yukonga.miuix.kmp.basic.Icon(top.yukonga.miuix.kmp.icon.MiuixIcons.Search, "웹 검색 가능",
+                                    Modifier.padding(start = 8.dp).size(18.dp), tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                            }
+                        }
+                    }
+                }
+            }
         }
-        top.yukonga.miuix.kmp.preference.WindowSpinnerPreference(
-            items = models.map { m ->
-                val note = notes[m].orEmpty()
-                top.yukonga.miuix.kmp.basic.DropdownItem(
-                    text = m,
-                    icon = if (note.contains(ApiLlm.NOTE_SEARCH)) searchIcon else null,
-                    summary = note.replace(ApiLlm.NOTE_SEARCH, "").trim().ifEmpty { null },
-                )
-            },
-            selectedIndex = models.indexOf(modelName).coerceAtLeast(0),
-            title = "모델",
-            onSelectedIndexChange = { modelName = models[it]; save() },
-        )
     } else {
         ArrowPreference("모델", summary = modelName.ifBlank { "키를 넣으면 목록을 불러와요" }, onClick = { loadModels() })
     }

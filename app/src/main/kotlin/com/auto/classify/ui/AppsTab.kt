@@ -84,49 +84,61 @@ fun AppsTab(model: AppModel) {
     model.settingsVersion
     val excluded = model.excluded()
 
-    Column(Modifier.fillMaxSize()) {
-        TextField(value = query, onValueChange = { query = it }, useLabelAsPlaceholder = true, label = "앱 검색", singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp))
-        TabRow(listOf("전체", "제외됨"), filter, { filter = it }, Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-        val list = rows
+    // Search and tabs scroll with the list (under the title bar's blur, not fixed above it).
+    val list = rows
+    // Excluded apps are one list: you excluded them, or a rule keeps them out. The source is a tag.
+    fun exclusionOf(r: AppRow): String? = when {
+        r.pkg in excluded -> "직접 제외"
+        r.reason?.contains("제외") == true -> "규칙 제외"
+        else -> null
+    }
+    val shown = (list ?: emptyList()).filter { r ->
+        (filter == 0 || exclusionOf(r) != null) &&
+            (query.isBlank() || r.label.contains(query, true) || r.pkg.contains(query, true))
+    }
+    LazyColumn(
+        Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = LocalTopInset.current + 6.dp, bottom = 12.dp + LocalNavInset.current),
+    ) {
+        item {
+            TextField(value = query, onValueChange = { query = it }, useLabelAsPlaceholder = true, label = "앱 검색", singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
+        }
+        item {
+            TabRow(listOf("전체", "제외됨"), filter, { filter = it }, Modifier.padding(vertical = 4.dp))
+        }
         if (list == null) {
-            Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { InfiniteProgressIndicator() }
+            item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { InfiniteProgressIndicator() } }
         } else {
-            val shown = list.filter {
-                (filter == 0 || it.pkg in excluded) &&
-                    (query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true))
+            item {
+                Hint(if (classifying) "앱 ${shown.size}개 · 분류하는 중…" else "앱 ${shown.size}개 · 누르면 자세히 보기")
             }
-            LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + LocalTopInset.current, bottom = 12.dp + LocalNavInset.current)) {
-                item {
-                    Hint(if (classifying) "앱 ${shown.size}개 · 분류하는 중…"
-                        else "앱 ${shown.size}개 · 누르면 자세히 보기")
-                }
-                items(shown, key = { it.pkg }) { r ->
-                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp), onClick = { open = r },
-                        pressFeedbackType = top.yukonga.miuix.kmp.utils.PressFeedbackType.Sink,
-                        insideMargin = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AppIcon(r.pkg, Modifier.size(42.dp))
-                            Text(r.label, Modifier.weight(1f).padding(horizontal = 12.dp), style = MiuixTheme.textStyles.main,
-                                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                            r.mainColor?.let { c -> Swatch(c, 10.dp) }
-                            val tag = when {
-                                r.pkg in excluded -> "제외"
-                                classifying && r.reason == null -> "…"
-                                r.target == null -> "그대로"
-                                r.target == "(폴더밖)" -> "폴더 밖"
-                                else -> r.target
-                            }
-                            Text(
-                                tag,
-                                Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50))
-                                    .background(MiuixTheme.colorScheme.surfaceContainerHighest)
-                                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                                style = MiuixTheme.textStyles.footnote1,
-                                color = if (r.target == null || r.pkg in excluded) MiuixTheme.colorScheme.onSurfaceVariantSummary
-                                    else MiuixTheme.colorScheme.onSurface,
-                            )
+            items(shown, key = { it.pkg }) { r ->
+                val exclusion = exclusionOf(r)
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp), onClick = { open = r },
+                    pressFeedbackType = top.yukonga.miuix.kmp.utils.PressFeedbackType.Sink,
+                    insideMargin = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AppIcon(r.pkg, Modifier.size(42.dp))
+                        Text(r.label, Modifier.weight(1f).padding(horizontal = 12.dp), style = MiuixTheme.textStyles.main,
+                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        r.mainColor?.let { c -> Swatch(c, 10.dp) }
+                        val tag = when {
+                            exclusion != null -> exclusion
+                            classifying && r.reason == null -> "…"
+                            r.target == null -> "그대로"
+                            r.target == "(폴더밖)" -> "폴더 밖"
+                            else -> r.target
                         }
+                        Text(
+                            tag,
+                            Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50))
+                                .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = if (r.target == null || exclusion != null) MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                else MiuixTheme.colorScheme.onSurface,
+                        )
                     }
                 }
             }

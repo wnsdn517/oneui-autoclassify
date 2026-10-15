@@ -23,6 +23,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.isSystemInDarkTheme
+import top.yukonga.miuix.kmp.blur.highlight.Highlight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
@@ -80,10 +83,10 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
     LaunchedEffect(Unit) { Updater.check(context, quiet = true) }
     // Miuix blur, the way the Miuix sample app wires it: the pages are captured as a backdrop, the title
     // bar gets a progressive fade-out blur, and the floating bar gets a rounded texture blur.
-    val surface = MiuixTheme.colorScheme.surface
-    val surfaceContainer = MiuixTheme.colorScheme.surfaceContainer
+    // The page background is captured as the backdrop, so the blur starts from the same color the pages show.
+    val background = MiuixTheme.colorScheme.background
     val backdrop = rememberLayerBackdrop {
-        drawRect(surface)
+        drawRect(background)
         drawContent()
     }
     var overlayHeight by remember { mutableIntStateOf(0) }
@@ -97,7 +100,7 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
             LocalTopInset provides with(density) { topHeight.toDp() },
             LocalNavInset provides with(density) { overlayHeight.toDp() },
         ) {
-            Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+            Box(Modifier.fillMaxSize().background(background).layerBackdrop(backdrop)) {
                 // Swipe sideways between tabs, like HyperOS apps.
                 androidx.compose.foundation.pager.HorizontalPager(pager, beyondViewportPageCount = 1) { page ->
                     when (page) {
@@ -121,7 +124,7 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
                     gradient = ProgressiveBlur.Top.copy(curve = 2.2f),
                     blurRadius = 10f,
                     colors = BlurDefaults.blurColors(
-                        blendColors = listOf(BlendColorEntry(color = surface.copy(alpha = 0.3f))),
+                        blendColors = listOf(BlendColorEntry(color = background.copy(alpha = 0.3f))),
                     ),
                 ),
             )
@@ -138,13 +141,14 @@ fun MainScreen(model: AppModel, activity: MainActivity) {
             BottomAction(model, tab)
             // Tabs on a rounded, blurred surface over the pages, as the Miuix sample shows them.
             FloatingNavigationBar(
-                modifier = Modifier.textureBlur(
+                modifier = Modifier.offset(y = 12.dp).textureBlur(
                     backdrop = backdrop,
                     shape = RoundedCornerShape(FloatingToolbarDefaults.CornerRadius),
                     blurRadius = 25f,
                     colors = BlurDefaults.blurColors(
-                        blendColors = listOf(BlendColorEntry(color = surfaceContainer.copy(alpha = 0.6f))),
+                        blendColors = listOf(BlendColorEntry(color = background.copy(alpha = 0.4f))),
                     ),
+                    highlight = if (isSystemInDarkTheme()) Highlight.GlassStrokeMiddleDark else Highlight.GlassStrokeMiddleLight,
                 ),
                 color = Color.Transparent,
             ) {
