@@ -121,6 +121,7 @@ public final class SingleFolders {
             if (f != null) problems.add("폴더 표시: " + f);
             String o = moveOut(bridge, cl);
             if (o != null) problems.add("폴더 사이 이동: " + o);
+            deletionLog(bridge, cl);
         } catch (Throwable t) {
             problems.add("DexKit 실패: " + t);
         } finally {
@@ -353,6 +354,51 @@ public final class SingleFolders {
         });
         Diag.log("단일 앱 폴더: 폴더 사이 이동 " + viewModel + "." + threshold.getName() + " 연결 (메서드 " + users.size() + "개)");
         return null;
+    }
+
+    /**
+     * Diagnostics only: every time the launcher deletes a folder it says why and from where (first 16 times), so a
+     * report of a folder that was not kept can name the launcher code path that removed it.
+     */
+    private static void deletionLog(DexKitBridge bridge, ClassLoader cl) {
+        try {
+            List<MethodData> found = find(bridge, matcher().name("deleteItem")
+                    .paramTypes(Arrays.asList(ITEM_DATA, "java.lang.String")));
+            final Class<?> itemData = XposedHelpers.findClass(ITEM_DATA, cl);
+            final Method getType = itemData.getMethod("getType");
+            final Method getId = itemData.getMethod("getId");
+            final int[] shown = {0};
+            int n = 0;
+            for (MethodData d : found) {
+                Method m = d.getMethodInstance(cl);
+                if (Modifier.isAbstract(m.getModifiers()) || m.getDeclaringClass().isInterface()) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            Object item = param.args[0];
+                            if (item == null || !"FOLDER".equals(String.valueOf(getType.invoke(item)))) return;
+                            synchronized (shown) {
+                                if (shown[0]++ >= 16) return;
+                            }
+                            StringBuilder from = new StringBuilder();
+                            StackTraceElement[] st = new Throwable().getStackTrace();
+                            for (int i = 1; i < st.length && from.length() < 400; i++) {
+                                String c = st[i].getClassName();
+                                if (c.startsWith("de.robv") || c.startsWith("java.") || c.startsWith("android.")) continue;
+                                from.append(c).append('.').append(st[i].getMethodName()).append(' ');
+                            }
+                            Diag.log("폴더 삭제: id " + getId.invoke(item) + " 이유 '" + param.args[1] + "' 호출 " + from);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                });
+                n++;
+            }
+            Diag.log("단일 앱 폴더: 폴더 삭제 기록 " + n + "곳 연결");
+        } catch (Throwable t) {
+            Diag.log("단일 앱 폴더: 폴더 삭제 기록 실패 " + t);
+        }
     }
 
     private static MethodMatcher matcher() {

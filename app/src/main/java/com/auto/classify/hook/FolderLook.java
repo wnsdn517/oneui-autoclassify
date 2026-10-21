@@ -107,8 +107,43 @@ final class FolderLook {
         } else {
             Diag.log("폴더 Liquid Glass: 렌즈 효과는 Android 13 이상에서만");
         }
+        hookBlurStrength();
         loading.set(true);
         load();
+    }
+
+    /**
+     * The apps screen's own background blur: the launcher sets it through SemBlurInfoWrapper.setSemBlurInfo (17 and
+     * 18 differ in the trailing parameters only), so the radius argument is scaled by the strength setting
+     * (30 = the launcher's own radius).
+     */
+    private void hookBlurStrength() {
+        Class<?> wrapper = findClass("com.honeyspace.sdk.SemBlurInfoWrapper");
+        if (wrapper == null) {
+            Diag.log("앱 화면 흐림: SemBlurInfoWrapper 없음");
+            return;
+        }
+        final java.util.concurrent.atomic.AtomicInteger logged = new java.util.concurrent.atomic.AtomicInteger();
+        XposedBridge.hookAllMethods(wrapper, "setSemBlurInfo", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object[] a = param.args;
+                if (a.length < 3 || !(a[0] instanceof View) || !(a[2] instanceof Integer)) return;
+                View v = (View) a[0];
+                // The wallpaper blur view is shared by every screen; the apps screen's states use the BLUR_BG_REGULAR
+                // presets (ids 132 light, 135 dark in 17 and 18).
+                Object preset = a.length > 8 ? a[8] : null;
+                boolean apps = dimFor(v) < 1f || v.getClass().getName().contains("Applist")
+                        || Integer.valueOf(132).equals(preset) || Integer.valueOf(135).equals(preset);
+                int radius = (Integer) a[2];
+                if (logged.incrementAndGet() <= 60) {
+                    Diag.log("흐림 적용: " + v.getClass().getSimpleName() + " 반경 " + radius + " 프리셋 " + (a.length > 8 ? a[8] : "-") + (apps ? " 앱 화면" : ""));
+                }
+                if (!apps || radius <= 0) return;
+                refreshNow();
+                a[2] = Math.max(1, Math.min(900, Math.round(radius * blurLevel / 30f)));
+            }
+        });
     }
 
     private Class<?> findClass(String name) {
@@ -166,11 +201,41 @@ final class FolderLook {
     }
 
     /** The launcher's tile is replaced by a clear bitmap of the same size; the lens pass draws the glass. */
+    private static final java.util.Map<Object, Integer> tileTints = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+    private static final java.util.Map<Bitmap, Integer> tints = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    private static final int SIGNAL = 17;
+
+    /** The folder colour carried by glassOf() inside a finished icon bitmap; 0 when there is none. */
+    private static int tintOf(Bitmap icon) {
+        Integer known = tints.get(icon);
+        if (known != null) return known;
+        int found = 0;
+        try {
+            int w = icon.getWidth(), h = icon.getHeight();
+            int[] px = new int[w * h];
+            icon.getPixels(px, 0, w, 0, 0, w, h);
+            for (int c : px) {
+                int a = c >>> 24;
+                if (a >= SIGNAL - 2 && a <= SIGNAL) {
+                    found = (0xFF << 24) | (c & 0xFFFFFF);
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        tints.put(icon, found);
+        return found;
+    }
+
     static Bitmap glassOf(Bitmap tile, int bgColor) {
         int w = tile.getWidth(), h = tile.getHeight();
         if (w < 8 || h < 8) return null;
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         out.setDensity(tile.getDensity());
+        // The launcher draws this bitmap into the folder's finished icon, so the colour travels as one nearly
+        // invisible pixel (alpha 17, in the transparent corner outside the rounded tile) that tintOf() finds again.
+        if (w > 4 && h > 4) out.setPixel(2, 2, Color.argb(SIGNAL, Color.red(bgColor), Color.green(bgColor), Color.blue(bgColor)));
         return out;
     }
 
@@ -199,14 +264,135 @@ final class FolderLook {
                     if (size <= 0) return;
                     float left = (v.getWidth() + v.getPaddingLeft() - v.getPaddingRight() - size) / 2f;
                     float inset = size * 0.02f;
+                    Bitmap tb = icon instanceof android.graphics.drawable.BitmapDrawable
+                            ? ((android.graphics.drawable.BitmapDrawable) icon).getBitmap() : null;
+                    Integer tc = tb == null ? null : tintOf(tb);
+                    tint = tc == null ? 0 : tc;
+                    // While its folder is open the tile is drawn without the colour mark: keep what it had.
+                    if (tint != 0 || !folderShowing()) tileTints.put(v, tint);
                     lens(v, (Canvas) param.args[0], left + inset, v.getPaddingTop() + inset,
-                            size - 2 * inset, size - 2 * inset, size * 0.33f, size * 0.14f, size * 0.32f, 0f, 0.10f, false);
+                            size - 2 * inset, size - 2 * inset, size * 0.33f, size * 0.18f, size * 0.5f, 0f, 0.04f, false);
                 } catch (Throwable t) {
                     Diag.failed(Diag.F_CORE, "폴더 렌즈", t);
                 }
             }
         });
         Diag.log("폴더 Liquid Glass 렌즈 훅 연결");
+        hookAppRim(base);
+    }
+
+    private final java.util.Map<Bitmap, Bitmap[]> rims = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /** A thin glass rim along every other icon's real outline (apps screen, home, dock, opened folders). */
+    private void hookAppRim(Class<?> base) {
+        // Hooked on TextView.onDraw (the icon and label are drawn there), not on the icon view's own onDraw: the rim
+        // lands before the launcher draws the badge on top of it.
+        XposedBridge.hookAllMethods(TextView.class, "onDraw", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (!glass || !appRim || capturing || !base.isInstance(param.thisObject)
+                        || folderIconView.isInstance(param.thisObject)) return;
+                try {
+                    TextView v = (TextView) param.thisObject;
+                    Drawable icon = v.getCompoundDrawables()[1];
+                    if (!(icon instanceof android.graphics.drawable.BitmapDrawable) || v.getAlpha() < 0.05f || !v.isShown()) return;
+                    Bitmap bmp = ((android.graphics.drawable.BitmapDrawable) icon).getBitmap();
+                    int size = icon.getBounds().width();
+                    if (bmp == null || size <= 0 || size > v.getWidth()) return;
+                    float left = (v.getWidth() + v.getPaddingLeft() - v.getPaddingRight() - size) / 2f;
+                    rim(v, (Canvas) param.args[0], bmp, left, v.getPaddingTop(), size);
+                } catch (Throwable t) {
+                    Diag.failed(Diag.F_CORE, "앱 아이콘 테두리", t);
+                }
+            }
+        });
+    }
+
+    /** Erodes (max = false) or dilates (max = true) an alpha plane by r pixels, rows then columns. */
+    private static int[] spread(int[] a, int w, int h, int r, boolean max) {
+        int[] tmp = new int[a.length], out = new int[a.length];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int m = max ? 0 : 255;
+                for (int k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) {
+                    int c = a[y * w + k];
+                    m = max ? Math.max(m, c) : Math.min(m, c);
+                }
+                tmp[y * w + x] = m;
+            }
+        }
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int m = max ? 0 : 255;
+                for (int k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) {
+                    int c = tmp[k * w + x];
+                    m = max ? Math.max(m, c) : Math.min(m, c);
+                }
+                out[y * w + x] = m;
+            }
+        }
+        return out;
+    }
+
+    private static Bitmap plane(int[] a, int w, int h) {
+        byte[] b = new byte[a.length];
+        for (int i = 0; i < a.length; i++) b[i] = (byte) a[i];
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ALPHA_8);
+        out.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(b));
+        return out;
+    }
+
+    /** The icon's outline as two alpha masks: a band just inside its edge and a band just outside it. */
+    private Bitmap[] rimsOf(Bitmap icon, float density) {
+        Bitmap[] known = rims.get(icon);
+        if (known != null) return known;
+        int w = icon.getWidth(), h = icon.getHeight();
+        int[] px = new int[w * h];
+        icon.getPixels(px, 0, w, 0, 0, w, h);
+        int[] a = new int[px.length];
+        for (int i = 0; i < px.length; i++) a[i] = px[i] >>> 24;
+        int d = Math.max(2, Math.round(1.3f * density));
+        int o = Math.max(1, Math.round(1.0f * density));
+        int[] eroded = spread(a, w, h, d, false);
+        int[] grown = spread(a, w, h, o, true);
+        int[] inner = new int[a.length], outer = new int[a.length];
+        for (int i = 0; i < a.length; i++) {
+            inner[i] = Math.max(0, a[i] - eroded[i]);
+            outer[i] = Math.max(0, grown[i] - a[i]);
+        }
+        Bitmap[] made = {plane(inner, w, h), plane(outer, w, h)};
+        rims.put(icon, made);
+        return made;
+    }
+
+    private void rim(View v, Canvas canvas, Bitmap icon, float left, float top, float size) {
+        float density = v.getResources().getDisplayMetrics().density;
+        Bitmap[] masks = rimsOf(icon, density);
+        // The rim takes the colour of what is behind the icon, lightened, like the folders' rim.
+        int tint = Color.WHITE;
+        Bitmap bg = wallSoft != null ? wallSoft : wall;
+        if (bg != null) {
+            float[] c = {left + size / 2f, top + size / 2f};
+            toScreen(v).mapPoints(c);
+            float kk = (float) v.getResources().getDisplayMetrics().widthPixels / bg.getWidth();
+            int px = bg.getPixel(Math.max(0, Math.min(bg.getWidth() - 1, (int) (c[0] / kk))),
+                    Math.max(0, Math.min(bg.getHeight() - 1, (int) (c[1] / kk))));
+            float dim = dimFor(v);
+            tint = Color.rgb(Math.round((Color.red(px) * dim + 255) / 2f), Math.round((Color.green(px) * dim + 255) / 2f),
+                    Math.round((Color.blue(px) * dim + 255) / 2f));
+        }
+        canvas.save();
+        canvas.translate(left, top);
+        android.graphics.RectF dst = new android.graphics.RectF(0, 0, size, size);
+        Paint ring = new Paint(Paint.FILTER_BITMAP_FLAG);
+        ring.setShader(new android.graphics.LinearGradient(0, 0, size, size,
+                new int[]{Color.argb(170, Color.red(tint), Color.green(tint), Color.blue(tint)),
+                        Color.argb(50, Color.red(tint), Color.green(tint), Color.blue(tint)),
+                        Color.argb(50, Color.red(tint), Color.green(tint), Color.blue(tint)),
+                        Color.argb(130, Color.red(tint), Color.green(tint), Color.blue(tint))},
+                new float[]{0f, 0.35f, 0.65f, 1f}, Shader.TileMode.CLAMP));
+        canvas.drawBitmap(masks[0], null, dst, ring);
+        canvas.restore();
     }
 
     // ---- picture of the screen behind the opened folder ---------------------------------------------------
@@ -215,7 +401,14 @@ final class FolderLook {
     private static volatile View captureExclude;
     private static volatile boolean captureTiles;
     private volatile int blurLevel = 30;
+    private volatile boolean appRim = true;
+    /** The folder colour of the tile being drawn (or last opened): a faint base colour on the glass. */
+    private volatile int tint;
+    private volatile java.lang.ref.WeakReference<Object> openedTile;
     private volatile Bitmap appsShot;
+    // The same pictures with only a light blur: clear glass shows its backdrop, so the lens has something to bend.
+    private volatile Bitmap shotLite;
+    private volatile Bitmap appsLite;
     private volatile long appsShotAt;
     private volatile long shotAt;
 
@@ -286,6 +479,7 @@ final class FolderLook {
                 // A tap that lands while a folder is opening sees a screen that is already fading: keep the good picture.
                 if (folderShowing() && shot != null) return;
                 clickAt = android.os.SystemClock.uptimeMillis();
+                openedTile = new java.lang.ref.WeakReference<>(param.thisObject);
                 refreshNow();
                 try {
                     captureScreen((View) param.thisObject, (View) param.thisObject);
@@ -407,15 +601,14 @@ final class FolderLook {
      * folder. Taken once per opening at a quarter of the resolution, then shrunk further, which is the blur.
      */
     /** The launcher's views at a quarter of the resolution over the wallpaper; null when it cannot be taken now. */
-    private Bitmap snapshot(View v, View exclude, boolean tiles) {
+    private Bitmap snapshot(View v, View exclude, boolean tiles, boolean views) {
         android.util.DisplayMetrics dm = v.getResources().getDisplayMetrics();
         View root = v.getRootView();
         if (root == null || capturing) return null;
         int w = Math.max(8, dm.widthPixels / 4), h = Math.max(8, dm.heightPixels / 4);
         Bitmap bm = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas cv = new Canvas(bm);
-        // The apps screen shows the wallpaper heavily blurred, not as it is on the home screen.
-        Bitmap bgWall = dimFor(v) < 1f && wallSoft != null ? wallSoft : wall;
+        Bitmap bgWall = wall;
         if (bgWall != null) {
             Paint base = new Paint(Paint.FILTER_BITMAP_FLAG);
             // The apps screen dims the wallpaper with a layer that is not a view, so it is dimmed here too.
@@ -427,6 +620,7 @@ final class FolderLook {
             }
             cv.drawBitmap(bgWall, null, new android.graphics.Rect(0, 0, w, h), base);
         }
+        if (!views) return bm;
         cv.save();
         cv.scale(0.25f, 0.25f);
         capturing = true;
@@ -443,12 +637,22 @@ final class FolderLook {
         return bm;
     }
 
+    /** Box radius (quarter resolution) that looks like the launcher's own apps-screen blur at the set strength. */
+    private int appsBlur() {
+        return 1 + Math.round(blurLevel * 0.35f);
+    }
+
+    private int liteBlur() {
+        return 1 + appsBlur() / 4;
+    }
+
     private void captureScreen(View v, View exclude) {
-        Bitmap bm = snapshot(v, exclude, false);
+        Bitmap bm = snapshot(v, exclude, false, true);
         if (bm == null) return;
-        // The strength setting is the apps screen's; the home screen keeps the default.
-        int level = dimFor(v) < 1f ? blurLevel : 30;
-        Bitmap soft = blur(bm, 2 + Math.round(level * 0.2f));
+        boolean apps = dimFor(v) < 1f;
+        int level = blurLevel;
+        Bitmap soft = blur(bm.copy(Bitmap.Config.ARGB_8888, false), appsBlur());
+        shotLite = blur(bm, liteBlur());
         shot = soft;
         shotAt = android.os.SystemClock.uptimeMillis();
         if (seen.incrementAndGet() <= 10) {
@@ -460,11 +664,12 @@ final class FolderLook {
         }
     }
 
-    /** The apps screen's own background (wallpaper, dimming, search bar) without the folders: what the tiles bend. */
+    /** The apps screen's background behind its folders: the dimmed wallpaper only, never the pages' own views. */
     private void captureApps(View v) {
-        Bitmap bm = snapshot(v, null, true);
+        Bitmap bm = snapshot(v, null, true, false);
         if (bm == null) return;
-        appsShot = blur(bm, 2 + Math.round(blurLevel * 0.2f));
+        appsShot = blur(bm.copy(Bitmap.Config.ARGB_8888, false), appsBlur());
+        appsLite = blur(bm, liteBlur());
         appsShotAt = android.os.SystemClock.uptimeMillis();
         Diag.log("앱 화면 배경 캡처");
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
@@ -514,7 +719,7 @@ final class FolderLook {
                 float w = v.getWidth(), h = v.getHeight();
                 float r = o.getRadius() > 0 ? o.getRadius() : Math.min(w, h) * 0.08f;
                 float d = v.getResources().getDisplayMetrics().density;
-                lens(v, canvas, 0, 0, w, h, r, 30 * d, 60 * d, 0.82f, 0.18f, true);
+                lens(v, canvas, 0, 0, w, h, r, 40 * d, 100 * d, 0.82f, 0.06f, true);
             } catch (Throwable t) {
                 Diag.failed(Diag.F_CORE, "폴더 열림 렌즈", t);
             }
@@ -666,9 +871,9 @@ final class FolderLook {
         toScreen.getValues(watch.mat);
         Matrix toLocal = new Matrix();
         if (!toScreen.invert(toLocal)) return;
-        Bitmap real = frosted ? shot : null;
+        Bitmap real = frosted ? shotLite : null;
         boolean appsBg = false;
-        if (!frosted && watch.dim < 1f && !capturing) {
+        if (!frosted && dimFor(v) < 1f && !capturing) {
             if (appsShot == null || android.os.SystemClock.uptimeMillis() - appsShotAt > 60_000) {
                 try {
                     captureApps(v);
@@ -679,10 +884,10 @@ final class FolderLook {
                     Diag.failed(Diag.F_CORE, "앱 화면 배경", t);
                 }
             }
-            real = appsShot;
+            real = appsLite;
             appsBg = real != null;
         }
-        Bitmap bg = real != null ? real : ((frosted || watch.dim < 1f) && wallSoft != null ? wallSoft : wall);
+        Bitmap bg = real != null ? real : ((frosted || dimFor(v) < 1f) && wallSoft != null ? wallSoft : wall);
 
         BitmapShader content = new BitmapShader(bg, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
         content.setFilterMode(BitmapShader.FILTER_MODE_LINEAR);
@@ -702,7 +907,8 @@ final class FolderLook {
         lens.setFloatUniform("depthEffect", 1f);
         lens.setFloatUniform("chromaticAberration", 0.3f);
 
-        float dim = real != null && !appsBg ? 1f : (dimOverride > 0 ? dimOverride : watch.dim);
+        // The opened folder's container dims everything outside the panel; the panel's own picture gets the same dimming.
+        float dim = frosted && real != null ? 0.6f : real != null ? 1f : (dimOverride > 0 ? dimOverride : dimFor(v));
         ColorMatrix colors = new ColorMatrix();
         colors.setSaturation(1.5f);
         ColorMatrix dimmed = new ColorMatrix();
@@ -718,6 +924,13 @@ final class FolderLook {
         canvas.clipPath(clip);
         canvas.drawRect(left, top, left + w, top + h, paint);
         canvas.drawColor(Color.argb(Math.round(255 * surfaceAlpha), 255, 255, 255));
+        Object tile = openedTile == null ? null : openedTile.get();
+        Integer own = tile == null ? null : tileTints.get(tile);
+        int base = frosted ? (own == null ? 0 : own) : tint;
+        // Only a real colour tints the glass; the launcher's default (near-black or grey) leaves it clear.
+        int hi = Math.max(Color.red(base), Math.max(Color.green(base), Color.blue(base)));
+        int lo = Math.min(Color.red(base), Math.min(Color.green(base), Color.blue(base)));
+        if (Color.alpha(base) > 0 && hi - lo >= 30) canvas.drawColor(withAlpha(base, 46));
 
         RuntimeShader edge = new RuntimeShader(highlight);
         edge.setFloatUniform("size", w, h);
@@ -809,6 +1022,7 @@ final class FolderLook {
                     Uri.parse("content://" + Config.CLASSIFIER_AUTHORITY), "app_overrides", null, null);
             if (b != null) {
                 glass = "glass".equals(b.getString("folder_style"));
+                appRim = b.getBoolean("app_rim", true);
                 int level = Math.max(0, Math.min(100, b.getInt("folder_blur", 30)));
                 // Closed tiles bend the same blurred apps screen, so a new strength retakes it.
                 if (level != blurLevel) appsShotAt = 0;

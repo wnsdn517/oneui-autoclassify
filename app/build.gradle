@@ -11,8 +11,8 @@ android {
         applicationId 'com.auto.classify'
         minSdk 35
         targetSdk 35
-        versionCode 67
-        versionName '0.20.0'
+        versionCode 68
+        versionName '0.20.1'
     }
 
     buildTypes {

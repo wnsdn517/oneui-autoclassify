@@ -63,6 +63,7 @@ public class ClassifierProvider extends ContentProvider {
         out.putStringArray("icons", icons.toArray(new String[0]));
         out.putString("folder_style", Prefs.open(c).getString("folder_style", "plain"));
         out.putInt("folder_blur", Prefs.open(c).getInt("folder_blur", 30));
+        out.putBoolean("app_rim", Prefs.open(c).getBoolean("app_rim", true));
         return out;
     }
 

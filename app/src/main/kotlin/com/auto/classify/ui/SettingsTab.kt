@@ -101,7 +101,8 @@ fun SettingsTab(model: AppModel, activity: MainActivity) {
                         model.edit({ putString(FolderStyle.KEY, FolderStyle.values[it]) }, reload = false)
                     },
                 )
-                IntSlider(model, "folder_blur", 30, 0..100, "앱 화면 배경 흐림 (폴더 열 때)", "%", reload = false)
+                IntSlider(model, "folder_blur", 30, 0..100, "배경 흐림 (앱 화면·폴더 열 때)", "%", reload = false)
+                PrefSwitch(model, "app_rim", true, "앱 아이콘 테두리", "앱 아이콘에도 얇은 유리 테두리 (홈·앱 화면, 홈을 다시 시작하면 적용돼요)")
                 // Same line the AI writes, so the manual pick and "AI로 설정" share one value.
                 val shape = IconShape.mode
                 WindowDropdownPreference(
