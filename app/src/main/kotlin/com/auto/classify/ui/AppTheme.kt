@@ -17,6 +17,14 @@ object ThemeChoice {
     var mode by mutableStateOf("system")
 }
 
+/** Folder background in the layout editor: "plain" (default) or "glass" (Liquid Glass blur). */
+object FolderStyle {
+    const val KEY = "folder_style"
+    val values = listOf("plain", "glass")
+    val names = listOf("기본", "Liquid Glass")
+    var mode by mutableStateOf("plain")
+}
+
 /** HyperOS look with miuix's own color scheme, light or dark as chosen. */
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
@@ -24,7 +32,7 @@ fun AppTheme(content: @Composable () -> Unit) {
     val controller = remember(mode) {
         ThemeController(
             when (mode) {
-                "light" -> ColorSchemeMode.Light
+                "light" -> ColorSchemeMode.MonetLight
                 "dark" -> ColorSchemeMode.Dark
                 else -> ColorSchemeMode.System
             }

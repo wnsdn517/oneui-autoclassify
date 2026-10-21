@@ -11,9 +11,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import top.yukonga.miuix.kmp.icon.extended.Search
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
@@ -30,6 +32,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.auto.classify.ai.AiUsage
 import com.auto.classify.ai.ApiLlm
+import com.auto.classify.core.Config
+import com.auto.classify.core.Directives
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,11 +55,26 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Index 0 is the default: the line is removed, so the icons draw as the system gives them. */
+private val ICON_SHAPE_VALUES = listOf(Directives.KEEP, Directives.CIRCLE, Directives.SQUARE)
+private val ICON_SHAPE_NAMES = listOf("기본", "원형", "사각")
+
 private val OPENAI_PRESETS = listOf(
     Triple("OpenRouter", "https://openrouter.ai/api/v1", "openrouter/free"),
     Triple("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
     Triple("직접 입력", "", ""),
 )
+
+/** Automatic backup before applying / restoring, and how many snapshots to keep. */
+@Composable
+private fun AutoBackupCard(model: AppModel) {
+    model.settingsVersion
+    val on = model.prefs.getBoolean(Config.KEY_AUTO_BACKUP, true)
+    Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+        PrefSwitch(model, Config.KEY_AUTO_BACKUP, true, "자동 백업", "정리·되돌리기 전에 현재 상태를 저장")
+        if (on) IntSlider(model, Config.KEY_BACKUP_KEEP, 10, 3..30, "최대 보관", "개")
+    }
+}
 
 @Composable
 fun SettingsTab(model: AppModel, activity: MainActivity) {
@@ -72,13 +91,38 @@ fun SettingsTab(model: AppModel, activity: MainActivity) {
                         model.edit({ putString(ThemeChoice.KEY, ThemeChoice.values[it]) }, reload = false)
                     },
                 )
+                WindowDropdownPreference(
+                    items = FolderStyle.names,
+                    selectedIndex = FolderStyle.values.indexOf(FolderStyle.mode).coerceAtLeast(0),
+                    title = "폴더 배경",
+                    summary = "미리보기와 앱 화면·홈의 폴더 (바꾼 뒤 One UI 홈을 다시 시작하면 적용돼요)",
+                    onSelectedIndexChange = {
+                        FolderStyle.mode = FolderStyle.values[it]
+                        model.edit({ putString(FolderStyle.KEY, FolderStyle.values[it]) }, reload = false)
+                    },
+                )
+                IntSlider(model, "folder_blur", 30, 0..100, "앱 화면 배경 흐림 (폴더 열 때)", "%", reload = false)
+                // Same line the AI writes, so the manual pick and "AI로 설정" share one value.
+                val shape = IconShape.mode
+                WindowDropdownPreference(
+                    items = ICON_SHAPE_NAMES,
+                    selectedIndex = ICON_SHAPE_VALUES.indexOf(shape).coerceAtLeast(0),
+                    title = "앱 아이콘 모양",
+                    summary = "앱 화면의 아이콘 모양 (홈 화면은 그대로예요)",
+                    onSelectedIndexChange = {
+                        val next = setDirective(model.prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!,
+                            Directives.D_ICON_SHAPE, ICON_SHAPE_VALUES[it])
+                        model.edit({ putString(Config.KEY_RULES, next) })
+                    },
+                )
             }
         }
         item { SmallTitle("AI 연결") }
-        item { Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) { AiConnection(model) } }
+        item { AiConnection(model) }
         item { SmallTitle("AI 사용 기록") }
         item { Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) { AiUsageCard() } }
         item { SmallTitle("백업 및 불러오기") }
+        item { AutoBackupCard(model) }
         item {
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                 ArrowPreference("설정 내보내기", summary = "규칙·AI 선택·옵션을 파일로 저장 (API 키 제외)", onClick = { activity.exportSettings() })
@@ -205,139 +249,156 @@ private fun AiConnection(model: AppModel) {
 
     LaunchedEffect(Unit) { if (key.isNotBlank()) loadModels() }
 
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-        SegTabs(listOf("Google AI Studio", "OpenAI 호환"), if (provider == ApiLlm.GEMINI) 0 else 1, {
-            save() // the current service keeps its own key
-            provider = if (it == 0) ApiLlm.GEMINI else ApiLlm.OPENAI
-            modelName = if (provider == ApiLlm.GEMINI) ApiLlm.DEFAULT_GEMINI else ""
-            models = emptyList()
-            key = ApiLlm.keyFor(sp, slot())
-            save()
-            loadModels()
-        })
-        if (provider == ApiLlm.GEMINI) {
-            Text(
-                "aistudio.google.com 에서 무료 키 만들기 →",
-                Modifier.fillMaxWidth().clickable {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey")))
-                }.padding(vertical = 10.dp),
-                color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.body2,
-            )
-        }
-    }
-    if (provider != ApiLlm.GEMINI) {
-        val idx = OPENAI_PRESETS.indexOfFirst { it.second == base }.let { if (it < 0) OPENAI_PRESETS.size - 1 else it }
-        WindowDropdownPreference(
-            items = OPENAI_PRESETS.map { it.first },
-            selectedIndex = idx,
-            title = "서비스",
-            summary = base.ifBlank { "주소를 입력하세요" },
-            onSelectedIndexChange = {
-                val pr = OPENAI_PRESETS[it]
+    // Connection, model, options and test in one card.
+    Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            SegTabs(listOf("Google AI Studio", "OpenAI 호환"), if (provider == ApiLlm.GEMINI) 0 else 1, {
                 save()
-                base = pr.second
-                modelName = pr.third
+                provider = if (it == 0) ApiLlm.GEMINI else ApiLlm.OPENAI
+                modelName = if (provider == ApiLlm.GEMINI) ApiLlm.DEFAULT_GEMINI else ""
+                models = emptyList()
                 key = ApiLlm.keyFor(sp, slot())
                 save()
                 loadModels()
-            },
-        )
-        if (idx == OPENAI_PRESETS.size - 1) {
-            TextField(value = base, onValueChange = { base = it; save() }, useLabelAsPlaceholder = true,
-                label = "주소 (…/v1)", singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+            })
+            if (provider == ApiLlm.GEMINI) {
+                Text(
+                    "aistudio.google.com 에서 무료 키 만들기 →",
+                    Modifier.fillMaxWidth().clickable {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey")))
+                    }.padding(vertical = 10.dp),
+                    color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.body2,
+                )
+            }
         }
-    }
-    TextField(
-        value = key, onValueChange = { key = it; save() }, useLabelAsPlaceholder = true, label = "API 키",
-        singleLine = true, visualTransformation = PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-    )
-    if (models.isNotEmpty()) {
-        // A plain list in a sheet, so the web-search mark can sit on the right of the model name.
-        var pickingModel by remember { mutableStateOf(false) }
-        ArrowPreference("모델", summary = modelName.ifBlank { "모델을 고르세요" }, onClick = { pickingModel = true })
-        if (pickingModel) {
-            WindowBottomSheet(show = true, title = "모델", onDismissRequest = { pickingModel = false }) {
-                LazyColumn(Modifier.heightIn(max = 520.dp)) {
-                    items(models) { m ->
-                        val note = notes[m].orEmpty()
-                        val selected = m == modelName
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                modelName = m
-                                save()
-                                pickingModel = false
-                            }.padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(m, style = MiuixTheme.textStyles.main,
-                                    color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface)
-                                note.replace(ApiLlm.NOTE_SEARCH, "").trim().takeIf { it.isNotEmpty() }?.let {
-                                    Text(it, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        if (provider != ApiLlm.GEMINI) {
+            val idx = OPENAI_PRESETS.indexOfFirst { it.second == base }.let { if (it < 0) OPENAI_PRESETS.size - 1 else it }
+            WindowDropdownPreference(
+                items = OPENAI_PRESETS.map { it.first },
+                selectedIndex = idx,
+                title = "서비스",
+                summary = base.ifBlank { "주소를 입력하세요" },
+                onSelectedIndexChange = {
+                    val pr = OPENAI_PRESETS[it]
+                    save()
+                    base = pr.second
+                    modelName = pr.third
+                    key = ApiLlm.keyFor(sp, slot())
+                    save()
+                    loadModels()
+                },
+            )
+            if (idx == OPENAI_PRESETS.size - 1) {
+                TextField(value = base, onValueChange = { base = it; save() }, useLabelAsPlaceholder = true,
+                    label = "주소 (…/v1)", singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+            }
+        }
+        TextField(
+            value = key, onValueChange = { key = it; save() }, useLabelAsPlaceholder = true, label = "API 키",
+            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        if (models.isNotEmpty()) {
+            var pickingModel by remember { mutableStateOf(false) }
+            ArrowPreference("모델", summary = modelName.ifBlank { "모델을 고르세요" }, onClick = { pickingModel = true })
+            if (pickingModel) {
+                WindowBottomSheet(show = true, title = "모델", onDismissRequest = { pickingModel = false }) {
+                    LazyColumn(Modifier.heightIn(max = 520.dp)) {
+                        items(models) { m ->
+                            val note = notes[m].orEmpty()
+                            val selected = m == modelName
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    modelName = m
+                                    save()
+                                    pickingModel = false
+                                }.padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(m, style = MiuixTheme.textStyles.main,
+                                        color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface)
+                                    val tokens = note.split(" ").filter { it.isNotEmpty() }
+                                    if (tokens.isNotEmpty()) {
+                                        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            tokens.forEach { t ->
+                                                val label = when (t) {
+                                                    ApiLlm.NOTE_SEARCH -> "웹 검색"
+                                                    ApiLlm.NOTE_IMAGE -> "이미지"
+                                                    ApiLlm.NOTE_TOOLS -> "도구"
+                                                    ApiLlm.NOTE_FREE -> "무료"
+                                                    else -> t
+                                                }
+                                                Text(label, style = MiuixTheme.textStyles.footnote1,
+                                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                                    modifier = Modifier.background(MiuixTheme.colorScheme.secondaryContainer, RoundedCornerShape(6.dp))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                                            }
+                                        }
+                                    }
                                 }
-                            }
-                            if (note.contains(ApiLlm.NOTE_SEARCH)) {
-                                top.yukonga.miuix.kmp.basic.Icon(top.yukonga.miuix.kmp.icon.MiuixIcons.Search, "웹 검색 가능",
-                                    Modifier.padding(start = 8.dp).size(18.dp), tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                             }
                         }
                     }
                 }
             }
+        } else {
+            ArrowPreference("모델", summary = modelName.ifBlank { "키를 넣으면 목록을 불러와요" }, onClick = { loadModels() })
         }
-    } else {
-        ArrowPreference("모델", summary = modelName.ifBlank { "키를 넣으면 목록을 불러와요" }, onClick = { loadModels() })
-    }
-    if (ApiLlm.supportsWeb(provider, base)) {
-        var web by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_WEB, false)) }
-        val canSearch = provider != ApiLlm.GEMINI || modelName.isBlank() || ApiLlm.geminiWeb(modelName)
+        if (ApiLlm.supportsWeb(provider, base)) {
+            var web by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_WEB, false)) }
+            val canSearch = provider != ApiLlm.GEMINI || modelName.isBlank() || ApiLlm.geminiWeb(modelName)
+            SwitchPreference(
+                title = "웹 검색",
+                summary = if (canSearch) "모르는 앱을 찾아보고 분류 (느려지고 토큰이 더 들어요)" else "이 모델은 검색을 못 해요",
+                checked = web && canSearch,
+                onCheckedChange = { web = it; sp.edit().putBoolean(ApiLlm.KEY_WEB, it).apply() },
+                enabled = canSearch,
+            )
+        }
+        var tools by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_TOOLS, true)) }
         SwitchPreference(
-            title = "웹 검색",
-            summary = if (canSearch) "모르는 앱을 찾아보고 분류 (느려지고 토큰이 더 들어요)" else "이 모델은 검색을 못 해요",
-            checked = web && canSearch,
-            onCheckedChange = { web = it; sp.edit().putBoolean(ApiLlm.KEY_WEB, it).apply() },
-            enabled = canSearch,
+            title = "AI 도구",
+            summary = "현재 배치·폴더·사용량을 직접 확인 (느려지고 토큰이 더 들어요)",
+            checked = tools,
+            onCheckedChange = { tools = it; sp.edit().putBoolean(ApiLlm.KEY_TOOLS, it).apply() },
         )
-    }
-    var tools by remember { mutableStateOf(sp.getBoolean(ApiLlm.KEY_TOOLS, true)) }
-    SwitchPreference(
-        title = "AI 도구",
-        summary = "현재 배치·폴더·사용량을 직접 확인 (느려지고 토큰이 더 들어요)",
-        checked = tools,
-        onCheckedChange = { tools = it; sp.edit().putBoolean(ApiLlm.KEY_TOOLS, it).apply() },
-    )
-    var granted by remember { mutableStateOf(AiTools.usageGranted(context)) }
-    val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(owner) {
-        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
-            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) granted = AiTools.usageGranted(context)
+        IntSlider(model, Config.KEY_AI_COOLDOWN, 30, 0..300, "요청 간격", "초")
+        IntSlider(model, Config.KEY_AI_DAILY, 30, 1..100, "하루 최대 요청", "번")
+        var granted by remember { mutableStateOf(AiTools.usageGranted(context)) }
+        val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+        androidx.compose.runtime.DisposableEffect(owner) {
+            val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+                if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) granted = AiTools.usageGranted(context)
+            }
+            owner.lifecycle.addObserver(obs)
+            onDispose { owner.lifecycle.removeObserver(obs) }
         }
-        owner.lifecycle.addObserver(obs)
-        onDispose { owner.lifecycle.removeObserver(obs) }
+        ArrowPreference(
+            title = "앱 사용 기록 접근",
+            summary = if (granted) "허용됨" else "허용 안 됨 · 눌러서 켜기",
+            enabled = tools,
+            onClick = {
+                context.startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                    .setData(Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            },
+        )
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            TextButton(
+                if (loading) "확인하는 중…" else "연결 확인",
+                { loadModels() },
+                Modifier.fillMaxWidth(),
+                enabled = !loading && key.isNotBlank(),
+            )
+            message?.let {
+                Text(it, Modifier.padding(top = 8.dp), style = MiuixTheme.textStyles.body2,
+                    color = if (it.startsWith("연결 실패")) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
+            Text("키는 이 기기에만 저장돼요",
+                Modifier.padding(top = 8.dp), style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        }
     }
-    ArrowPreference(
-        title = "앱 사용 기록 접근",
-        summary = if (granted) "허용됨" else "허용 안 됨 · 눌러서 켜기",
-        enabled = tools,
-        onClick = {
-            context.startActivity(Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                .setData(Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        },
-    )
-    TextButton(
-        if (loading) "확인하는 중…" else "연결 확인",
-        { loadModels() },
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        enabled = !loading && key.isNotBlank(),
-    )
-    message?.let {
-        Text(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MiuixTheme.textStyles.body2,
-            color = if (it.startsWith("연결 실패")) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary)
-    }
-    Text("키는 이 기기에만 저장돼요",
-        Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp), style = MiuixTheme.textStyles.footnote1,
-        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 }
 
 @Composable
@@ -382,8 +443,15 @@ private fun UpdateCard() {
     Column(Modifier.padding(16.dp)) {
         Text(if (update) "새 버전 ${latest!!.version} 있음" else "현재 버전 $current", style = MiuixTheme.textStyles.title4)
         if (update && latest!!.notes.isNotBlank()) {
-            Text(latest.notes.take(600), Modifier.padding(top = 6.dp), style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            val scroll = rememberScrollState()
+            Column(
+                Modifier.padding(top = 6.dp)
+                    .heightIn(max = 200.dp)
+                    .verticalScroll(scroll)
+            ) {
+                Text(latest.notes.take(600), style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
         }
         Updater.progress?.let { pr ->
             LinearProgressIndicator(progress = pr, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
@@ -408,17 +476,3 @@ private fun UpdateCard() {
     }
 }
 
-/** Shown at the top of the organize tab when a newer release exists. */
-@Composable
-fun UpdateBanner() {
-    val context = LocalContext.current
-    val latest = Updater.latest ?: return
-    if (!Updater.newer(latest.version, Updater.current(context))) return
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 6.dp),
-        insideMargin = PaddingValues(16.dp),
-        onClick = { Updater.dialogOpen = true },
-    ) {
-        Text("새 버전 ${latest.version} 이 나왔어요", style = MiuixTheme.textStyles.title4)
-            }
-}

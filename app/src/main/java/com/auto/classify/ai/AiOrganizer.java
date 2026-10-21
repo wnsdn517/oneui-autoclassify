@@ -35,6 +35,8 @@ public final class AiOrganizer {
         public final Map<String, String> assign = new LinkedHashMap<>();
         /** Folder name (or Classifier.LOOSE) -> 1-based page the instruction asked for. */
         public final Map<String, Integer> pages = new LinkedHashMap<>();
+        /** pkg -> "folder|page": the page inside its folder the AI asked for (single apps). */
+        public final Map<String, String> appPages = new LinkedHashMap<>();
         /** Layout directive lines ("!폴더안정렬 색상") the instruction asked for. */
         public final List<String> settings = new ArrayList<>();
         /** App settings the request asked to change ("min_apps=3"), already validated. */
@@ -58,8 +60,8 @@ public final class AiOrganizer {
 
     private static final String RULES_OF_THE_ANSWER =
             "Answer with one JSON object only:\n"
-                    + "{\"answer\":\"\", \"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app numbers]}], \"loose\":[app numbers], "
-                    + "\"loose_page\":0, \"moves\":[{\"apps\":[app numbers],\"to\":\"폴더 이름 or (폴더밖)\",\"page\":0}], \"dissolve\":[\"폴더 이름\"], "
+                    + "{\"answer\":\"\", \"folders\":[{\"name\":\"폴더 이름\",\"page\":0,\"apps\":[app refs]}], \"loose\":[app refs], "
+                    + "\"loose_page\":0, \"loose_groups\":[{\"page\":1,\"apps\":[app refs]}], \"moves\":[{\"apps\":[app refs],\"to\":\"폴더 이름 or (폴더밖)\",\"page\":0,\"in_folder_page\":0}],\"dissolve\":[\"폴더 이름\"], "
                     + "\"rename\":{\"지금 이름\":\"새 이름\"}, \"folder_colors\":{\"폴더 이름\":\"빨강\"}, "
                     + "\"folder_order\":[\"폴더 이름\"], \"settings\":[setting lines], \"options\":[\"KEY=VALUE\"], \"memo_add\":[\"짧은 메모\"], \"memo_remove\":[\"지울 메모의 일부\"], \"note\":\"짧은 한국어 요약\"}\n"
                     + "- moves / dissolve / rename change only what they name; every other app keeps its current place. Use them for "
@@ -67,13 +69,20 @@ public final class AiOrganizer {
                     + "folders up (their apps go outside folders: 풀어줘, 해체, 없애줘), rename = rename folders. "
                     + "A change you describe in note or answer MUST appear in folders/loose/moves/dissolve/rename, or it does not happen.\n"
                     + "- page: 0 = anywhere. When the user asks to split things across pages or put folders/apps on a page, "
-                    + "set page (1 = first page) on those folders, and loose_page for the loose apps. loose_page moves every app listed "
-                    + "in loose, so to put certain apps on a page outside folders, list exactly those apps in loose and set loose_page. "
+                    + "set page (1 = first page) on those folders. Apps outside folders get their page from loose_groups: one group per "
+                    + "page, {\"page\":N,\"apps\":[...]}, so apps meant for different pages go in different groups (\"자주 쓰는 앱 1페이지, "
+                    + "루팅 앱 2페이지\" = two groups). loose_page is only for the case where ALL loose apps share one page. "
                     + "Never leave an app out of the answer to place it: an app not listed ends up on page 1.\n"
-                    + "- A full organization (folders + loose) lists every app number exactly once. When the request is about only some "
+                    + "- A full organization (folders + loose) lists every app exactly once. When the request is about only some "
                     + "apps or one folder, use moves/dissolve/rename instead and leave folders and loose empty; apps you don't name keep "
                     + "their current place. When the request needs no folder change at all (a question, an explanation, a settings "
                     + "change), leave all of them empty. Never rearrange folders the request didn't ask about.\n"
+                    + "- in_folder_page (in moves): 0 = anywhere in the folder. To put apps on a given page INSIDE their folder (\"게임 폴더 2페이지에 "
+                    + "카카오 넣어\"), list them in moves with to = that folder and in_folder_page = that page (1 = first page of the folder; "
+                    + "about 12 apps per page). Pages outside folders use loose_groups (or, for a small change, moves with to = \"(폴더밖)\" "
+                    + "and in_folder_page = the page on the apps screen). Each page can hold a different set of apps; there is no page limit.\n"
+                    + "- An app ref is one string with the number AND the name exactly as in the app list, e.g. \"12 카카오톡\". "
+                    + "Copy both from the same line; a wrong number is caught by the name.\n"
                     + "- Apps listed under 'Fixed by the user's rules' stay where those rules put them whatever you answer. If the request "
                     + "asks to move one of them, do not claim it moved: say in note (Korean) which rule in '내 규칙' holds it and that "
                     + "deleting that rule lets it move.\n"
@@ -83,13 +92,14 @@ public final class AiOrganizer {
                     + "into the closest related folder, and split folders with more than 20 apps into meaningful sub-groups.\n"
                     + "- The automatic category shown for each app is only a hint and is sometimes wrong; use your knowledge of the app.\n"
                     + "- loose = apps the instruction wants outside folders (keep it empty unless asked).\n"
-                    + "- settings: only when the instruction asks about order or folder colors, using exactly these lines:\n"
+                    + "- settings: only when the instruction asks about order, folder colors, or app icon shape, using exactly these lines:\n"
                     + "  !폴더안정렬 이름|색상|설치일   (order inside folders; 색상 = rainbow order of icon colors)\n"
                     + "  !앱정렬 이름|색상|설치일       (order of apps outside folders)\n"
                     + "  !폴더정렬 이름|색상|앱수       (order of folders)\n"
                     + "  !배치 폴더먼저|앱먼저\n"
                     + "  !폴더색 아이콘|카테고리|알록달록|기본   (아이콘 = each folder takes its apps' icon color, 카테고리 = by category "
                     + "name, 알록달록 = every folder a different color in rainbow order, 기본 = no color)\n"
+                    + "  !아이콘모양 원형|사각|그대로   (app icons on the apps screen drawn as circles, as squares, or as-is; \"동그랗게\" = 원형)\n"
                     + "- folder_colors: when the user names colors for particular folders (\"게임 폴더는 빨간색\"), folder name -> "
                     + "빨강|주황|노랑|초록|청록|파랑|보라|분홍|회색|흰색|검정|기본 or #RRGGBB. These win over !폴더색. For a request about "
                     + "all folders at once (알록달록, 화려하게, 색 다르게) use the !폴더색 setting instead.\n"
@@ -374,7 +384,7 @@ public final class AiOrganizer {
     /** True when the answer changes nothing at all although it wasn't a question: it only talked about a change. */
     private static boolean onlyTalk(Plan p, Map<String, String> assign, Map<String, Integer> pages, List<String> order) {
         if (!p.answer.isEmpty() || !p.options.isEmpty() || !p.settings.isEmpty() || !p.colors.isEmpty()
-                || !p.memoAdd.isEmpty() || !p.memoRemove.isEmpty()) {
+                || !p.memoAdd.isEmpty() || !p.memoRemove.isEmpty() || !p.appPages.isEmpty()) {
             return false;
         }
         if (p.note.trim().isEmpty()) return false;
@@ -517,6 +527,21 @@ public final class AiOrganizer {
         if (o.optInt("loose_page") > 0) p.pages.put(Classifier.LOOSE, o.optInt("loose_page"));
         JSONArray loose = o.optJSONArray("loose");
         for (int j = 0; loose != null && j < loose.length(); j++) put(p, a, loose.opt(j), Classifier.LOOSE);
+        // Loose apps with their own page: one group per page.
+        JSONArray groups = o.optJSONArray("loose_groups");
+        for (int i = 0; groups != null && i < groups.length(); i++) {
+            JSONObject g = groups.optJSONObject(i);
+            JSONArray gapps = g == null ? null : g.optJSONArray("apps");
+            int page = g == null ? 0 : g.optInt("page");
+            for (int j = 0; gapps != null && j < gapps.length(); j++) {
+                String pk = pkgOf(a, gapps.opt(j));
+                if (pk == null) continue;
+                p.assign.putIfAbsent(pk, Classifier.LOOSE);
+                if (page > 0 && Classifier.LOOSE.equals(p.assign.get(pk))) p.appPages.put(pk, Classifier.LOOSE + "|" + page);
+            }
+        }
+        // Each app has its own page now; one page for all loose apps would only contradict them.
+        if (groups != null && groups.length() > 0) p.pages.remove(Classifier.LOOSE);
         // Small changes: named apps move; renamed and dissolved folders take their current apps along.
         JSONArray moves = o.optJSONArray("moves");
         for (int i = 0; moves != null && i < moves.length(); i++) {
@@ -526,7 +551,12 @@ public final class AiOrganizer {
             if (to.isEmpty() || to.equals("(폴더 밖)") || to.equalsIgnoreCase("loose") || to.equals("폴더 밖")) to = Classifier.LOOSE;
             if (m.optInt("page") > 0) p.pages.put(to, m.optInt("page"));
             JSONArray apps = m.optJSONArray("apps");
-            for (int j = 0; apps != null && j < apps.length(); j++) put(p, a, apps.opt(j), to);
+            int inPage = m.optInt("in_folder_page");
+            for (int j = 0; apps != null && j < apps.length(); j++) {
+                put(p, a, apps.opt(j), to);
+                String pk = pkgOf(a, apps.opt(j));
+                if (inPage > 0 && pk != null && to.equals(p.assign.get(pk))) p.appPages.put(pk, to + "|" + inPage);
+            }
         }
         JSONObject rename = o.optJSONObject("rename");
         for (java.util.Iterator<String> it = rename == null ? null : rename.keys(); it != null && it.hasNext(); ) {
@@ -601,15 +631,53 @@ public final class AiOrganizer {
 
     /** App number (or, from a sloppy answer, the package name) -> folder; first answer wins. */
     private static void put(Plan p, Apps a, Object ref, String folder) {
+        String pk = pkgOf(a, ref);
+        if (pk != null) p.assign.putIfAbsent(pk, folder);
+    }
+
+    /** The package an app reference (number or package name) points to; null if unknown. */
+    private static String pkgOf(Apps a, Object ref) {
         int idx = -1;
         if (ref instanceof Number) idx = ((Number) ref).intValue() - 1;
         else if (ref != null) {
             String s = ref.toString().trim();
-            if (s.matches("\\d+")) idx = Integer.parseInt(s) - 1;
-            else idx = a.pkgs.indexOf(s);
+            java.util.regex.Matcher m = APP_REF.matcher(s);
+            if (m.matches()) {
+                idx = Integer.parseInt(m.group(1)) - 1;
+                String name = m.group(2).trim();
+                // "12 카카오톡": when the name belongs to a different app than the number, the name wins.
+                if (!name.isEmpty() && (idx < 0 || idx >= a.pkgs.size() || !sameLabel(a.labels.get(idx), name))) {
+                    int byName = uniqueLabel(a, name);
+                    if (byName >= 0) idx = byName;
+                }
+            } else {
+                idx = a.pkgs.indexOf(s);
+                if (idx < 0) idx = uniqueLabel(a, s);
+            }
         }
-        if (idx < 0 || idx >= a.pkgs.size()) return;
-        p.assign.putIfAbsent(a.pkgs.get(idx), folder);
+        if (idx < 0 || idx >= a.pkgs.size()) return null;
+        return a.pkgs.get(idx);
+    }
+
+    private static final java.util.regex.Pattern APP_REF = java.util.regex.Pattern.compile("^(\\d+)\\s*[.|:)\\-]?\\s*(.*)$");
+
+    private static String labelKey(String s) {
+        return s.toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    private static boolean sameLabel(String label, String name) {
+        return labelKey(label).equals(labelKey(name));
+    }
+
+    /** Index of the one app with this label; -1 when none or several share it. */
+    private static int uniqueLabel(Apps a, String name) {
+        int found = -1;
+        for (int i = 0; i < a.labels.size(); i++) {
+            if (!sameLabel(a.labels.get(i), name)) continue;
+            if (found >= 0) return -1;
+            found = i;
+        }
+        return found;
     }
 
     /** The JSON object inside a reply (models sometimes wrap it in text or code fences). */

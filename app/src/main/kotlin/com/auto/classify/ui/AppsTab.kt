@@ -2,10 +2,12 @@ package com.auto.classify.ui
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,7 +20,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -30,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,9 +41,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.auto.classify.ClassifierProvider
 import com.auto.classify.core.ColorEngine
-import com.auto.classify.core.Config
-import com.auto.classify.core.PlayModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
@@ -55,30 +56,39 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
-import java.text.DateFormat
-import java.util.Date
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 /** Per-app result of the current settings. */
 data class AppRow(
     val pkg: String, val label: String, val target: String?, val reason: String?, val mainColor: Int?,
 )
 
+/** Last classified list, with the settings version and package set it was built from. Reused on re-entry. */
+private var rowsCache: Triple<Int, List<String>, List<AppRow>>? = null
+
 @Composable
 fun AppsTab(model: AppModel) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(0) }
-    var rows by remember { mutableStateOf<List<AppRow>?>(null) }
+    var rows by remember { mutableStateOf<List<AppRow>?>(rowsCache?.takeIf { it.first == model.settingsVersion }?.third) }
     var open by remember { mutableStateOf<AppRow?>(null) }
     val version = model.settingsVersion
+    // Reading the version recomposes the list when a name or icon changes.
+    AppOverrides.version
 
     var classifying by remember { mutableStateOf(false) }
     LaunchedEffect(version) {
         // Names first (fast), then categories and colors (slower).
         val apps = withContext(Dispatchers.IO) { launchableApps(context) }
+        val pkgs = apps.map { it.first }
+        // Same settings and same installed apps as the last build: show it at once, no reclassify.
+        rowsCache?.takeIf { it.first == version && it.second == pkgs }?.let { rows = it.third; return@LaunchedEffect }
         if (rows == null) rows = apps.map { AppRow(it.first, it.second, null, null, null) }
         classifying = true
-        rows = withContext(Dispatchers.IO) { loadRows(context, apps) }
+        val loaded = withContext(Dispatchers.IO) { loadRows(context, apps) }
+        rows = loaded
+        rowsCache = Triple(version, pkgs, loaded)
         classifying = false
     }
     model.settingsVersion
@@ -86,6 +96,11 @@ fun AppsTab(model: AppModel) {
 
     // Search and tabs scroll with the list (under the title bar's blur, not fixed above it).
     val list = rows
+    val collator = remember { java.text.Collator.getInstance(java.util.Locale.KOREAN) }
+    // Shown names (user-set names win), so the list is sorted and searched by what is on screen.
+    val names = remember(list, AppOverrides.version) {
+        list.orEmpty().associate { it.pkg to (AppOverrides.name(context, it.pkg) ?: it.label) }
+    }
     // Excluded apps are one list: you excluded them, or a rule keeps them out. The source is a tag.
     fun exclusionOf(r: AppRow): String? = when {
         r.pkg in excluded -> "직접 제외"
@@ -93,9 +108,10 @@ fun AppsTab(model: AppModel) {
         else -> null
     }
     val shown = (list ?: emptyList()).filter { r ->
+        val label = names[r.pkg] ?: r.label
         (filter == 0 || exclusionOf(r) != null) &&
-            (query.isBlank() || r.label.contains(query, true) || r.pkg.contains(query, true))
-    }
+            (query.isBlank() || label.contains(query, true) || r.pkg.contains(query, true))
+    }.sortedWith { a, b -> collator.compare(names[a.pkg] ?: a.label, names[b.pkg] ?: b.label) }
     LazyColumn(
         Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(),
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = LocalTopInset.current + 6.dp, bottom = 12.dp + LocalNavInset.current),
@@ -115,14 +131,13 @@ fun AppsTab(model: AppModel) {
             }
             items(shown, key = { it.pkg }) { r ->
                 val exclusion = exclusionOf(r)
-                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp), onClick = { open = r },
+                Card(Modifier.animateItem().fillMaxWidth().padding(vertical = 6.dp), onClick = { open = r },
                     pressFeedbackType = top.yukonga.miuix.kmp.utils.PressFeedbackType.Sink,
                     insideMargin = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         AppIcon(r.pkg, Modifier.size(42.dp))
-                        Text(r.label, Modifier.weight(1f).padding(horizontal = 12.dp), style = MiuixTheme.textStyles.main,
+                        Text(names[r.pkg] ?: r.label, Modifier.weight(1f).padding(horizontal = 12.dp), style = MiuixTheme.textStyles.main,
                             maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                        r.mainColor?.let { c -> Swatch(c, 10.dp) }
                         val tag = when {
                             exclusion != null -> exclusion
                             classifying && r.reason == null -> "…"
@@ -132,7 +147,7 @@ fun AppsTab(model: AppModel) {
                         }
                         Text(
                             tag,
-                            Modifier.padding(start = 8.dp).clip(RoundedCornerShape(50))
+                            Modifier.clip(RoundedCornerShape(50))
                                 .background(MiuixTheme.colorScheme.surfaceContainerHighest)
                                 .padding(horizontal = 10.dp, vertical = 4.dp),
                             style = MiuixTheme.textStyles.footnote1,
@@ -147,6 +162,9 @@ fun AppsTab(model: AppModel) {
     open?.let { r -> AppDetailSheet(model, r, r.pkg in excluded) { open = null } }
 }
 
+/** "pkg@updateTime" to dominant color of the real icon (custom icons do not change it). Decoding icons is the slow part of a reload. */
+private val colorCache = java.util.concurrent.ConcurrentHashMap<String, Int?>()
+
 private fun loadRows(context: Context, apps: List<Pair<String, String>>): List<AppRow> {
     val pkgs = apps.map { it.first }.toTypedArray()
     val labels = apps.map { it.second }.toTypedArray()
@@ -155,66 +173,85 @@ private fun loadRows(context: Context, apps: List<Pair<String, String>>): List<A
     val reasons = b.getStringArray("reasons")
     val pm = context.packageManager
     return apps.mapIndexed { i, (pkg, label) ->
-        val color = runCatching {
-            ColorEngine.representative(ColorEngine.pixels(pm.getApplicationIcon(pkg)), ColorEngine.Method.CENTROID, 0.5f, 0.5f)
-        }.getOrNull()
+        val updated = runCatching { pm.getPackageInfo(pkg, 0).lastUpdateTime }.getOrDefault(0L)
+        val key = "$pkg@$updated"
+        val color = colorCache.getOrPut(key) {
+            runCatching {
+                ColorEngine.representative(ColorEngine.pixels(pm.getApplicationIcon(pkg)), ColorEngine.Method.CENTROID, 0.5f, 0.5f)
+            }.getOrNull()
+        }
         AppRow(pkg, label, targets?.getOrNull(i), reasons?.getOrNull(i), color)
     }
 }
 
-/** Method name, a rounded swatch, the group it lands in and the hex value. */
-@Composable
-private fun ColorTile(method: String, color: Int?, group: String) {
-    Column(Modifier.padding(end = 8.dp).width(64.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier.size(44.dp).clip(RoundedCornerShape(14.dp))
-                .border(1.dp, MiuixTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-                .background(if (color != null) Color(color) else MiuixTheme.colorScheme.surfaceContainerHigh),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (color == null) Text(group, style = MiuixTheme.textStyles.footnote2)
-        }
-        Text(method, Modifier.padding(top = 6.dp), style = MiuixTheme.textStyles.footnote1, maxLines = 1)
-        if (color != null) {
-            Text(group, style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        }
-    }
-}
-
+/** Name, icon, folder and exclusion for one app. Opened from the UI tweak tab. */
 @Composable
 private fun AppDetailSheet(model: AppModel, row: AppRow, excluded: Boolean, onClose: () -> Unit) {
     val context = LocalContext.current
-    var detail by remember { mutableStateOf<AppDetail?>(null) }
-    LaunchedEffect(row.pkg) { detail = withContext(Dispatchers.IO) { loadDetail(context, model, row) } }
-    var expanded by remember { mutableStateOf(setOf<String>()) }
-    var more by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf(false) }
-    val isColor = model.prefs.getString(Config.KEY_MODE, Config.MODE_CATEGORY) == Config.MODE_COLOR
+    var renaming by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    // Reading the version subscribes this sheet to override changes.
+    AppOverrides.version
+    // Picked image waits here until the crop dialog saves it.
+    var cropSource by remember { mutableStateOf<Bitmap?>(null) }
+    val pickIcon = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            cropSource = withContext(Dispatchers.IO) { AppOverrides.decode(context, uri) }
+        }
+    }
+    val displayName = AppOverrides.name(context, row.pkg) ?: row.label
 
     WindowBottomSheet(show = true, onDismissRequest = onClose) {
         Column(Modifier.heightIn(max = 700.dp).verticalScroll(rememberScrollState())) {
             Column(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 AppIcon(row.pkg, Modifier.size(64.dp))
-                Text(row.label, Modifier.padding(top = 10.dp), style = MiuixTheme.textStyles.title3)
+                Text(displayName, Modifier.padding(top = 10.dp), style = MiuixTheme.textStyles.title3)
                 Text(row.pkg, Modifier.padding(top = 2.dp), style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             }
-            val d = detail
-            if (d == null) {
-                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { InfiniteProgressIndicator() }
-                return@Column
-            }
-
-            // What happens to this app, in two big values.
-            Card(insideMargin = PaddingValues(16.dp)) {
-                Row(Modifier.fillMaxWidth()) {
-                    Big("카테고리", d.category ?: "그대로 둠", Modifier.weight(1f), highlight = !isColor)
-                    Big("색상", d.colorGroup ?: "-", Modifier.weight(1f), highlight = isColor, swatch = d.colors.firstOrNull()?.second)
+            Card {
+                ArrowPreference(
+                    title = "이름 바꾸기",
+                    summary = AppOverrides.name(context, row.pkg)?.let { "기본: ${row.label}" },
+                    onClick = { renaming = true },
+                )
+                if (renaming) {
+                    var text by remember { mutableStateOf(displayName) }
+                    WindowDialog(show = true, title = "앱 이름", summary = "비우면 기본 이름으로 돌아가요",
+                        onDismissRequest = { renaming = false }) {
+                        TextField(value = text, onValueChange = { text = it }, singleLine = true, useLabelAsPlaceholder = true,
+                            label = row.label, modifier = Modifier.fillMaxWidth())
+                        SheetActions("취소", { renaming = false }, "저장", {
+                            // Same as the real name means no override.
+                            AppOverrides.setName(context, row.pkg, if (text.trim() == row.label) "" else text)
+                            AppOverrides.changed()
+                            renaming = false
+                        })
+                    }
                 }
-                val why = (if (isColor) d.colorReason else d.categoryReason)
-                if (!why.isNullOrBlank()) {
-                    Text("근거: $why", Modifier.padding(top = 12.dp), style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                ArrowPreference(
+                    title = "아이콘 바꾸기",
+                    summary = if (AppOverrides.hasIcon(context, row.pkg)) "직접 고른 아이콘" else null,
+                    onClick = { pickIcon.launch("image/*") },
+                )
+                if (AppOverrides.hasIcon(context, row.pkg)) {
+                    ArrowPreference(
+                        title = "기본 아이콘으로",
+                        onClick = {
+                            AppOverrides.resetIcon(context, row.pkg)
+                            AppOverrides.changed()
+                        },
+                    )
+                }
+            }
+            cropSource?.let { src ->
+                IconCropDialog(src, onDismiss = { cropSource = null }) { cropped ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) { AppOverrides.setIconBitmap(context, row.pkg, cropped) }
+                        AppOverrides.changed()
+                        cropSource = null
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -226,43 +263,6 @@ private fun AppDetailSheet(model: AppModel, row: AppRow, excluded: Boolean, onCl
                 )
                 SwitchPreference(checked = excluded, onCheckedChange = { model.setExcluded(row.pkg, it) },
                     title = "정리에서 빼기")
-            }
-            Spacer(Modifier.height(12.dp))
-            Card {
-                ArrowPreference(
-                    title = "자세히",
-                    summary = if (more) "접기" else "분류 데이터 · 아이콘 색 · 앱 정보",
-                    onClick = { more = !more },
-                )
-            }
-            if (more) {
-                Spacer(Modifier.height(12.dp))
-                Card(insideMargin = PaddingValues(16.dp)) {
-                    Info("Play 스토어", d.play ?: "데이터 없음")
-                    Info("앱이 선언한 카테고리", d.declared ?: "없음")
-                    Info("버전", d.version)
-                    Info("설치", d.installed)
-                    Info("시스템 앱", if (d.system) "예" else "아니요")
-                    Text("아이콘 색", Modifier.padding(top = 12.dp, bottom = 8.dp), style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                        d.colors.forEach { (name, c, group) -> ColorTile(name, c, group) }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Card {
-                    d.sections.filter { it.second.isNotEmpty() }.forEach { (title, items) ->
-                        ArrowPreference(
-                            title = "$title ${items.size}개",
-                            summary = if (title in expanded) "접기" else null,
-                            onClick = { if (items.isNotEmpty()) expanded = if (title in expanded) expanded - title else expanded + title },
-                        )
-                        if (title in expanded) items.forEach {
-                            Text(it.substringAfterLast('.').ifEmpty { it }, Modifier.padding(horizontal = 16.dp, vertical = 3.dp),
-                                style = MiuixTheme.textStyles.footnote1)
-                        }
-                    }
-                }
             }
             Spacer(Modifier.height(16.dp))
         }
@@ -286,98 +286,3 @@ fun Swatch(color: Int, size: androidx.compose.ui.unit.Dp) {
     )
 }
 
-@Composable
-private fun Big(title: String, value: String, modifier: Modifier, highlight: Boolean, swatch: Int? = null) {
-    Column(modifier) {
-        Text(title + if (highlight) " · 지금 기준" else "", style = MiuixTheme.textStyles.footnote1,
-            color = if (highlight) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (swatch != null) {
-                Swatch(swatch, 18.dp)
-                Spacer(Modifier.width(8.dp))
-            }
-            Text(value, style = MiuixTheme.textStyles.title3)
-        }
-    }
-}
-
-@Composable
-private fun Info(title: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Text(title, Modifier.weight(1f), style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        Text(value, style = MiuixTheme.textStyles.body2)
-    }
-}
-
-private class AppDetail(
-    val version: String, val targetSdk: Int, val minSdk: Int, val installed: String, val installer: String?,
-    val system: Boolean,
-    val category: String?, val categoryReason: String?, val colorGroup: String?, val colorReason: String?,
-    val play: String?, val declared: String?,
-    val colors: List<Triple<String, Int?, String>>,
-    val sections: List<Pair<String, List<String>>>,
-)
-
-private fun loadDetail(context: Context, model: AppModel, row: AppRow): AppDetail {
-    val pm = context.packageManager
-    val flags = PackageManager.GET_PERMISSIONS or PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES or
-        PackageManager.GET_RECEIVERS or PackageManager.GET_PROVIDERS or PackageManager.GET_META_DATA
-    val pi: PackageInfo = pm.getPackageInfo(row.pkg, flags)
-    val ai: ApplicationInfo = pi.applicationInfo!!
-
-    val one = arrayOf(row.pkg)
-    val lbl = arrayOf(row.label)
-    val cat = ClassifierProvider.classify(context, one, lbl, true, Config.MODE_CATEGORY)
-    val col = ClassifierProvider.classify(context, one, lbl, true, Config.MODE_COLOR)
-
-    val play = ClassifierProvider.play(context)?.guess(row.pkg, row.label)?.let {
-        PlayModel.CATEGORIES[it.category] + if (it.exact) " (정확)" else " (모델 ${(it.confidence * 100).toInt()}%)"
-    }
-    val declared = when (ai.category) {
-        ApplicationInfo.CATEGORY_GAME -> "게임"
-        ApplicationInfo.CATEGORY_AUDIO -> "오디오"
-        ApplicationInfo.CATEGORY_VIDEO -> "비디오"
-        ApplicationInfo.CATEGORY_IMAGE -> "이미지"
-        ApplicationInfo.CATEGORY_SOCIAL -> "소셜"
-        ApplicationInfo.CATEGORY_NEWS -> "뉴스"
-        ApplicationInfo.CATEGORY_MAPS -> "지도"
-        ApplicationInfo.CATEGORY_PRODUCTIVITY -> "생산성"
-        ApplicationInfo.CATEGORY_ACCESSIBILITY -> "접근성"
-        else -> null
-    }
-
-    val px = ColorEngine.pixels(pm.getApplicationIcon(row.pkg))
-    val x = model.prefs.getInt(Config.KEY_COLOR_X, 50) / 100f
-    val y = model.prefs.getInt(Config.KEY_COLOR_Y, 50) / 100f
-    val colors = listOf(
-        ColorEngine.Method.CENTROID to "중심점", ColorEngine.Method.AVERAGE to "평균", ColorEngine.Method.MODE to "최빈값",
-        ColorEngine.Method.POSITION to "위치",
-    ).map { (m, name) ->
-        val c = ColorEngine.representative(px, m, x, y)
-        Triple(name, c, c?.let { ColorEngine.hueName(it) } ?: "-")
-    } + Triple("색 개수", null, ColorEngine.classify(px, ColorEngine.Method.SPREAD, x, y) ?: "-")
-
-    val fmt = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
-    val installer = runCatching { pm.getInstallSourceInfo(row.pkg).installingPackageName }.getOrNull()
-    val meta = ai.metaData?.keySet()?.sorted()?.map { k -> "$k = ${ai.metaData.get(k)}" } ?: emptyList()
-    return AppDetail(
-        version = "${pi.versionName} (${pi.longVersionCode})",
-        targetSdk = ai.targetSdkVersion, minSdk = ai.minSdkVersion,
-        installed = fmt.format(Date(pi.firstInstallTime)),
-        installer = installer?.let { "설치 출처: $it · 업데이트 ${fmt.format(Date(pi.lastUpdateTime))}" },
-        system = ai.flags and ApplicationInfo.FLAG_SYSTEM != 0,
-        category = cat.getStringArray("targets")?.get(0), categoryReason = cat.getStringArray("reasons")?.get(0),
-        colorGroup = col.getStringArray("targets")?.get(0), colorReason = col.getStringArray("reasons")?.get(0),
-        play = play, declared = declared,
-        colors = colors,
-        sections = listOf(
-            "권한" to (pi.requestedPermissions?.toList() ?: emptyList()),
-            "액티비티" to (pi.activities?.map { it.name } ?: emptyList()),
-            "서비스" to (pi.services?.map { it.name } ?: emptyList()),
-            "리시버" to (pi.receivers?.map { it.name } ?: emptyList()),
-            "프로바이더" to (pi.providers?.map { "${it.name} (${it.authority})" } ?: emptyList()),
-            "메타데이터" to meta,
-        ),
-    )
-}

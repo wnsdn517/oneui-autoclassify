@@ -7,3 +7,4 @@ tools/out/
 /build/
 app/build/
 *.apk
+.ssh/

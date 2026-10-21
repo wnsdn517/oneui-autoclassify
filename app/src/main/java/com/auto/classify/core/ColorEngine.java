@@ -62,12 +62,44 @@ public final class ColorEngine {
                 Integer at = sample(px, x, y);
                 return at != null ? at : average(px);
             case AVERAGE:
-                return average(px);
+                return average(withoutPlate(px));
             case MODE:
-                return mode(px);
+                return mode(withoutPlate(px));
             default:
-                return centroid(px);
+                return centroid(withoutPlate(px));
         }
+    }
+
+    /**
+     * Drops a plain white, gray or black plate behind the glyph, so the plate does not decide the
+     * group (it would otherwise match the page background). Icons whose corners are colored, or
+     * where the plate is most of the icon, are returned unchanged.
+     */
+    static int[] withoutPlate(int[] px) {
+        int[] corners = {px[0], px[SIZE - 1], px[SIZE * (SIZE - 1)], px[SIZE * SIZE - 1]};
+        long r = 0, g = 0, b = 0;
+        for (int p : corners) {
+            if (Color.alpha(p) < 128) return px;
+            r += Color.red(p);
+            g += Color.green(p);
+            b += Color.blue(p);
+        }
+        int pr = (int) (r / 4), pg = (int) (g / 4), pb = (int) (b / 4);
+        float[] hsv = new float[3];
+        Color.RGBToHSV(pr, pg, pb, hsv);
+        if (hsv[1] * hsv[2] >= 0.18f) return px;
+        int[] out = px.clone();
+        int opaque = 0, kept = 0;
+        for (int i = 0; i < px.length; i++) {
+            int p = px[i];
+            if (Color.alpha(p) < 128) continue;
+            opaque++;
+            boolean plate = Math.abs(Color.red(p) - pr) <= 24 && Math.abs(Color.green(p) - pg) <= 24
+                    && Math.abs(Color.blue(p) - pb) <= 24;
+            if (plate) out[i] = 0;
+            else kept++;
+        }
+        return kept * 10 >= opaque ? out : px;
     }
 
     public static String hueName(int color) {

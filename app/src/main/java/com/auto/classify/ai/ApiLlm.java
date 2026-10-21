@@ -50,8 +50,8 @@ public final class ApiLlm implements Llm {
     }
 
     public Tools tools;
-    /** Gets the name of each tool as the model calls it. */
-    public java.util.function.Consumer<String> onTool;
+    /** Gets each tool as the model calls it: its name and what it looks up (argument values, may be empty). */
+    public java.util.function.BiConsumer<String, String> onTool;
     private static final int MAX_TOOL_STEPS = 6;
     /** Notes shown beside models in the picker (search support, free), filled by listModels(). */
     public final java.util.Map<String, String> notes = new java.util.LinkedHashMap<>();
@@ -220,8 +220,22 @@ public final class ApiLlm implements Llm {
         }
     }
 
+    /** The argument values of one tool call, short, for showing what the AI is looking up. */
+    private static String detail(JSONObject args) {
+        if (args == null) return "";
+        StringBuilder sb = new StringBuilder();
+        java.util.Iterator<String> keys = args.keys();
+        while (keys.hasNext()) {
+            String v = String.valueOf(args.opt(keys.next())).trim();
+            if (v.isEmpty() || v.equals("null")) continue;
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(v);
+        }
+        return sb.length() > 40 ? sb.substring(0, 40) + "…" : sb.toString();
+    }
+
     private String runTool(String name, JSONObject args) {
-        if (onTool != null) onTool.accept(name);
+        if (onTool != null) onTool.accept(name, detail(args));
         String r;
         try {
             r = tools.call(name, args == null ? new JSONObject() : args);
@@ -464,6 +478,7 @@ public final class ApiLlm implements Llm {
     /** Text models the key can use, as the service names them. */
     public List<String> listModels() throws Exception {
         List<String> out = new ArrayList<>();
+        notes.clear();
         if (GEMINI.equals(provider)) {
             String page = null;
             do {
@@ -477,7 +492,9 @@ public final class ApiLlm implements Llm {
                     String name = m.optString("name").replaceFirst("^models/", "");
                     if (!name.startsWith("gemini") || !isTextModel(name)) continue;
                     out.add(name);
-                    if (geminiWeb(name)) notes.put(name, NOTE_SEARCH);
+                    // Gemini text models do function calling. Images are never sent, so no image chip.
+                    tag(name, NOTE_TOOLS);
+                    if (geminiWeb(name)) tag(name, NOTE_SEARCH);
                 }
                 page = o.optString("nextPageToken", null);
                 if (page != null && page.isEmpty()) page = null;
@@ -496,11 +513,13 @@ public final class ApiLlm implements Llm {
                 JSONObject pricing = m.optJSONObject("pricing");
                 boolean free = id.endsWith(":free")
                         || pricing != null && "0".equals(pricing.optString("prompt")) && "0".equals(pricing.optString("completion"));
-                if (free) notes.put(id, "무료");
+                if (free) tag(id, NOTE_FREE);
                 // Models with the service's own search; the others would need OpenRouter's paid web plugin.
                 if (pricing != null && pricing.has("web_search") && !"0".equals(pricing.optString("web_search"))) {
-                    notes.put(id, free ? "무료 " + NOTE_SEARCH : NOTE_SEARCH);
+                    tag(id, NOTE_SEARCH);
                 }
+                JSONArray params = m.optJSONArray("supported_parameters");
+                if (params != null && params.toString().contains("\"tools\"")) tag(id, NOTE_TOOLS);
             }
         }
         return out;
@@ -510,7 +529,8 @@ public final class ApiLlm implements Llm {
     static boolean isTextModel(String id) {
         String l = id.toLowerCase(java.util.Locale.ROOT);
         for (String bad : new String[]{"image", "imagen", "veo", "tts", "audio", "live", "embed", "robotics", "computer-use",
-                "aqa", "whisper", "transcribe", "speech", "rerank", "moderation", "guard", "dall-e", "sdxl", "flux", "stable-diffusion"}) {
+                "aqa", "whisper", "transcribe", "speech", "rerank", "moderation", "guard", "dall-e", "sdxl", "flux", "stable-diffusion",
+                "banana", "omni"}) {
             if (l.contains(bad)) return false;
         }
         return true;
@@ -518,8 +538,17 @@ public final class ApiLlm implements Llm {
 
     private static final Pattern GEMINI_NAME_VERSION = Pattern.compile("^gemini-(\\d+(?:\\.\\d+)?)");
 
-    /** Marks a model that can search the web, in notes; the picker shows it as an icon. */
+    /** Capability tokens in notes, separated by spaces. The picker shows each as a chip. */
     public static final String NOTE_SEARCH = "검색";
+    public static final String NOTE_IMAGE = "이미지";
+    public static final String NOTE_TOOLS = "도구";
+    public static final String NOTE_FREE = "무료";
+
+    /** Adds one capability token to a model's note, once. */
+    private void tag(String id, String token) {
+        String old = notes.getOrDefault(id, "");
+        if (!java.util.Arrays.asList(old.split(" ")).contains(token)) notes.put(id, old.isEmpty() ? token : old + " " + token);
+    }
 
     /** Gemini 2.x and later (and the -latest aliases) can ground answers with Google Search; 2.0 Flash-Lite can't. */
     public static boolean geminiWeb(String id) {

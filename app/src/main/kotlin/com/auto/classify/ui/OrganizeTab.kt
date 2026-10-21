@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,7 +30,6 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -48,10 +48,10 @@ val COLOR_METHOD_HELP = listOf(
     "아이콘의 지정한 지점 색", "색이 얼마나 다양한지: 단색 · 투톤 · 다채로움", "비슷한 색끼리 N개 그룹으로",
 )
 
-private val MODES = listOf(Config.MODE_CATEGORY, Config.MODE_COLOR, Config.MODE_AI, Config.MODE_RULES)
-private val MODE_NAMES = listOf("카테고리", "색상", "AI", "규칙만")
+private val MODES = listOf(Config.MODE_CATEGORY, Config.MODE_COLOR, Config.MODE_AI)
+private val MODE_NAMES = listOf("카테고리", "색상", "AI")
 
-private enum class Sheet { NONE, AI, SIGNALS, FOLDER_NAMES, RULES, RULES_TEXT }
+private enum class Sheet { NONE, SIGNALS, FOLDER_NAMES }
 
 @Composable
 fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
@@ -62,34 +62,23 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
     val modeIdx = MODES.indexOf(mode).coerceAtLeast(0)
     var sheet by remember { mutableStateOf(Sheet.NONE) }
     var advanced by remember { mutableStateOf(false) }
-    val rules = p.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
-    val directives = Directives.parse(rules)
     val hasKey = remember(model.settingsVersion) { ApiLlm.fromPrefs(context) != null }
 
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(top = LocalTopInset.current, bottom = 12.dp + LocalNavInset.current)) {
+        LazyColumn(Modifier.fillMaxSize().overScrollVertical().scrollEndHaptic(), contentPadding = PaddingValues(top = LocalTopInset.current + 16.dp, bottom = 12.dp + LocalNavInset.current)) {
             item { RiskBanner(model) { model.showDiagnosis = true } }
-            item { UpdateBanner() }
-            // The explanation card is gone; it only shows when the module is off, as a warning.
-            if (!model.moduleActive) item {
-                Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 6.dp, bottom = 12.dp),
-                    insideMargin = PaddingValues(16.dp)) {
-                    Text("모듈 비활성 · LSPosed에서 켜 주세요", style = MiuixTheme.textStyles.title4)
-                }
-            }
 
-            // ---- 1. how apps are grouped
+            // ---- 1. how apps are grouped (tabs live in the same card as what they change)
             item { SmallTitle("어떻게 나눌까요") }
             item {
-                TabRow(
-                    tabs = MODE_NAMES,
-                    selectedTabIndex = modeIdx,
-                    onTabSelected = { model.setMode(MODES[it]) },
-                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp),
-                )
-            }
-            item {
                 Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    WindowDropdownPreference(
+                        items = MODE_NAMES,
+                        selectedIndex = modeIdx,
+                        title = "정리 방식",
+                        summary = basis(model),
+                        onSelectedIndexChange = { model.setMode(MODES[it]) },
+                    )
                     when (MODES[modeIdx]) {
                         Config.MODE_COLOR -> {
                             val idx = COLOR_METHODS.indexOf(p.getString(Config.KEY_COLOR_METHOD, "CENTROID")).coerceAtLeast(0)
@@ -109,50 +98,17 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                             }
                         }
                         Config.MODE_AI -> AiModeCard(model, hasKey, openSettings)
-                        Config.MODE_RULES -> Text(
-                            "규칙에 맞는 앱만 옮겨요",
-                            Modifier.padding(horizontal = 16.dp, vertical = 14.dp), style = MiuixTheme.textStyles.body2,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
                         else -> {
                             PrefSwitch(model, Config.KEY_DETAILED, false, "세분화", "소셜·메신저, 음악·영상 등을 따로")
-                            ArrowPreference("분류 기준", summary = signalsSummary(model), onClick = { sheet = Sheet.SIGNALS })
+                            ArrowPreference("확신도", summary = confidenceSummary(model), onClick = { sheet = Sheet.SIGNALS })
                             ArrowPreference("폴더 이름", onClick = { sheet = Sheet.FOLDER_NAMES })
                         }
                     }
                 }
             }
 
-            // ---- 2. the user's own rules (all modes)
-            item { SmallTitle("내 규칙") }
-            item {
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference("규칙", summary = folderRuleSummary(rules, mode), onClick = { sheet = Sheet.RULES })
-                    // AI mode uses only hand-picked apps and exclusions, so rules made from words would do nothing there.
-                    if (mode != Config.MODE_AI) ArrowPreference("AI로 규칙 만들기", onClick = { sheet = Sheet.AI })
-                }
-            }
-
-            // ---- 3. order
-            item { SmallTitle("정렬") }
-            item {
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    val appSorts = listOf(Directives.KEEP, Directives.NAME, Directives.COLOR, Directives.INSTALLED)
-                    DirectiveDropdown(model, rules, Directives.D_INSIDE, "폴더 안 앱", appSorts, directives.insideSort)
-                    DirectiveDropdown(model, rules, Directives.D_LOOSE, "폴더 밖 앱", appSorts, directives.looseSort)
-                    val aiOrder = mode == Config.MODE_AI && p.getString(Config.KEY_AI_ORDER, "[]")!!.trim().let { it != "[]" && it.isNotEmpty() }
-                    DirectiveDropdown(model, rules, Directives.D_FOLDERS, "폴더 순서",
-                        listOf(Directives.KEEP, Directives.NAME, Directives.COLOR, Directives.SIZE), directives.folderSort,
-                        enabled = !aiOrder, summary = if (aiOrder) "AI가 정한 순서" else null)
-                    DirectiveDropdown(model, rules, Directives.D_PLACEMENT, "배치",
-                        listOf(Directives.KEEP, Directives.FOLDERS_FIRST, Directives.APPS_FIRST), directives.placement)
-                    DirectiveDropdown(model, rules, Directives.D_FOLDER_COLOR, "폴더 색",
-                        listOf(Directives.KEEP, Directives.ICON, Directives.CATEGORY, Directives.RAINBOW, Directives.RESET), directives.folderColor)
-                }
-            }
-
-            // ---- 4. new installs
-            item { SmallTitle("새 앱") }
+            // ---- 2. new installs and advanced (merged, advanced is collapsible)
+            item { SmallTitle("새 앱·고급") }
             item {
                 Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     PrefSwitch(model, Config.KEY_ENABLED, true, "설치하면 바로 정리", null,
@@ -162,10 +118,6 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                         PrefSwitch(model, Config.KEY_AI_INSTALL, false, "AI에게 물어보기",
                             if (hasKey) null else "AI 연결 필요",
                             enabled = hasKey && live)
-                        if (live && hasKey && p.getBoolean(Config.KEY_AI_INSTALL, false)) {
-                            IntSlider(model, Config.KEY_AI_COOLDOWN, 30, 0..300, "요청 간격", "초")
-                            IntSlider(model, Config.KEY_AI_DAILY, 30, 1..100, "하루 최대 요청", "번")
-                        }
                     }
                     val modes = listOf(Config.UNCLASSIFIED_FREE, Config.UNCLASSIFIED_FOLDER, Config.UNCLASSIFIED_PAGE, Config.UNCLASSIFIED_KEEP)
                     val names = listOf("폴더 밖에", "한 폴더에", "정한 페이지에", "그대로")
@@ -189,18 +141,19 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
                         IntSlider(model, Config.KEY_UNCLASSIFIED_PAGE, 1, 1..10, "페이지", "")
                     }
                     PrefSwitch(model, Config.KEY_SCREEN_OFF_TIDY, true, "화면 꺼지면 페이지 정리", null, enabled = live)
-                }
-            }
-
-            // ---- 5. rarely changed
-            item {
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference("고급",
-                        onClick = { advanced = !advanced })
+                    // Advanced settings, collapsed by default
+                    ArrowPreference("고급", onClick = { advanced = !advanced })
                     if (advanced) {
                         PrefSwitch(model, Config.KEY_CREATE_FOLDERS, true, "새 폴더 만들기", null)
                         if (p.getBoolean(Config.KEY_CREATE_FOLDERS, true)) {
-                            IntSlider(model, Config.KEY_MIN_APPS, 2, 1..10, "새 폴더 최소 앱 수", "개")
+                            // Stored as min_apps: 1 keeps single-app folders, 2 (default) does not.
+                            model.settingsVersion
+                            SwitchPreference(
+                                checked = model.prefs.getInt(Config.KEY_MIN_APPS, 2) <= 1,
+                                onCheckedChange = { v -> model.edit({ putInt(Config.KEY_MIN_APPS, if (v) 1 else 2) }) },
+                                title = "앱 1개 유지",
+                                summary = "앱이 1개뿐인 폴더도 만들어 둬요",
+                            )
                         }
                         PrefSwitch(model, Config.KEY_SKIP_MOVED, false, "직접 옮긴 앱 건드리지 않기", null)
                         PrefSwitch(model, Config.KEY_CLEAN_STALE, true, "안 쓰는 폴더 비우기", null)
@@ -211,11 +164,8 @@ fun OrganizeTab(model: AppModel, openSettings: () -> Unit) {
     }
 
     when (sheet) {
-        Sheet.AI -> AiSheet(model) { sheet = Sheet.NONE }
         Sheet.SIGNALS -> SignalsSheet(model) { sheet = Sheet.NONE }
         Sheet.FOLDER_NAMES -> FolderNamesSheet(model) { sheet = Sheet.NONE }
-        Sheet.RULES -> RulesSheet(model, onText = { sheet = Sheet.RULES_TEXT }) { sheet = Sheet.NONE }
-        Sheet.RULES_TEXT -> RulesTextSheet(model) { sheet = Sheet.NONE }
         Sheet.NONE -> Unit
     }
 }
@@ -230,7 +180,15 @@ private const val INSTRUCTION_MAX = 20_000
 @Composable
 private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Unit) {
     val p = model.prefs
-    var instruction by remember(model.settingsVersion) { mutableStateOf(p.getString(Config.KEY_AI_REQUEST, "")!!) }
+    // The typed instruction survives tab switches and restarts (draft pref), so it is never lost.
+    var instruction by rememberSaveable(model.settingsVersion) {
+        mutableStateOf(p.getString(Config.KEY_AI_DRAFT, "")!!.ifBlank { p.getString(Config.KEY_AI_REQUEST, "")!! })
+    }
+    androidx.compose.runtime.LaunchedEffect(instruction) {
+        if (instruction != p.getString(Config.KEY_AI_DRAFT, "")) {
+            p.edit().putString(Config.KEY_AI_DRAFT, instruction).apply()
+        }
+    }
     androidx.compose.runtime.LaunchedEffect(Unit) {
         // Read the app list now so the button goes straight to the AI.
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -286,8 +244,14 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
         AiReply(model)
     }
     if (editing) {
-        var draft by remember { mutableStateOf(instruction) }
-        top.yukonga.miuix.kmp.window.WindowDialog(show = true, title = "어떻게 정리할까요?", onDismissRequest = { editing = false }) {
+        // The field writes straight to `instruction`, so Back or a tap outside never loses typing; only 취소 reverts.
+        val opened = remember { instruction }
+        val save = {
+            instruction = instruction.trim()
+            model.edit({ putString(Config.KEY_AI_REQUEST, instruction) }, reload = false)
+            editing = false
+        }
+        top.yukonga.miuix.kmp.window.WindowDialog(show = true, title = "어떻게 정리할까요?", onDismissRequest = save) {
             androidx.compose.foundation.layout.Column {
                 // The field scrolls inside a bounded area, so the buttons below never get pushed off screen.
                 val maxHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.4f).dp
@@ -295,19 +259,15 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
                     Modifier.heightIn(max = maxHeight).verticalScroll(rememberScrollState()),
                 ) {
                     TextField(
-                        value = draft,
-                        onValueChange = { if (it.length <= INSTRUCTION_MAX) draft = it },
+                        value = instruction,
+                        onValueChange = { if (it.length <= INSTRUCTION_MAX) instruction = it },
                         minLines = 5,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                Text("${draft.length} / $INSTRUCTION_MAX", Modifier.padding(top = 4.dp), style = MiuixTheme.textStyles.footnote1,
+                Text("${instruction.length} / $INSTRUCTION_MAX", Modifier.padding(top = 4.dp), style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                SheetActions("취소", { editing = false }, "저장", {
-                    instruction = draft.trim()
-                    model.edit({ putString(Config.KEY_AI_REQUEST, instruction) }, reload = false)
-                    editing = false
-                })
+                SheetActions("취소", { instruction = opened; editing = false }, "저장", save)
             }
         }
     }
@@ -316,9 +276,9 @@ private fun AiModeCard(model: AppModel, hasKey: Boolean, openSettings: () -> Uni
 /** The one AI input in the preview: adjust, rename or add rules, depending on the mode. */
 @Composable
 fun AiInput(model: AppModel, layout: org.json.JSONObject?) {
-    var text by remember { mutableStateOf("") }
+    // Restored from the last unsent draft, so closing the preview never loses typed text.
+    var text by rememberSaveable { mutableStateOf(model.aiDraft) }
     var sent by remember { mutableStateOf(false) }
-    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { model.aiDraft = "" } }
     androidx.compose.runtime.LaunchedEffect(text) { model.aiDraft = text }
     // The request stays until the AI succeeds, so a failure (503 …) can be sent again as is.
     androidx.compose.runtime.LaunchedEffect(model.aiRunning) {
@@ -354,7 +314,7 @@ fun AiInput(model: AppModel, layout: org.json.JSONObject?) {
 }
 
 @Composable
-private fun PrefSwitch(model: AppModel, key: String, def: Boolean, title: String, summary: String?, enabled: Boolean = true) {
+fun PrefSwitch(model: AppModel, key: String, def: Boolean, title: String, summary: String?, enabled: Boolean = true) {
     model.settingsVersion // redraw when any setting changes (prefs aren't observable)
     SwitchPreference(
         checked = model.prefs.getBoolean(key, def),
@@ -367,7 +327,7 @@ private fun PrefSwitch(model: AppModel, key: String, def: Boolean, title: String
 
 /** Integer slider bound to a pref; saves when released. */
 @Composable
-fun IntSlider(model: AppModel, key: String, def: Int, range: IntRange, title: String, unit: String) {
+fun IntSlider(model: AppModel, key: String, def: Int, range: IntRange, title: String, unit: String, reload: Boolean = true) {
     var v by remember(model.settingsVersion) { mutableStateOf(model.prefs.getInt(key, def).toFloat()) }
     SliderPreference(
         value = v,
@@ -376,29 +336,9 @@ fun IntSlider(model: AppModel, key: String, def: Int, range: IntRange, title: St
         valueText = "${v.toInt()}$unit",
         valueRange = range.first.toFloat()..range.last.toFloat(),
         steps = (range.last - range.first - 1).coerceAtLeast(0),
-        onValueChangeFinished = { model.edit({ putInt(key, v.toInt()) }) },
+        onValueChangeFinished = { model.edit({ putInt(key, v.toInt()) }, reload) },
     )
 }
-
-@Composable
-private fun DirectiveDropdown(
-    model: AppModel, rules: String, key: String, title: String, values: List<String>, current: String,
-    enabled: Boolean = true, summary: String? = null,
-) {
-    val idx = values.indexOf(current).coerceAtLeast(0)
-    WindowDropdownPreference(
-        items = values.map { if (it == Directives.KEEP) "그대로" else it + "순".takeIf { _ -> it in SORT_WORDS }.orEmpty() },
-        selectedIndex = idx,
-        title = title,
-        summary = summary,
-        enabled = enabled,
-        onSelectedIndexChange = { i ->
-            model.edit({ putString(Config.KEY_RULES, setDirective(rules, key, values[i])) })
-        },
-    )
-}
-
-private val SORT_WORDS = setOf(Directives.NAME, Directives.COLOR, Directives.INSTALLED, Directives.SIZE)
 
 /** Rewrites the "!key value" line; "그대로" removes it. */
 fun setDirective(rules: String, key: String, value: String): String {
@@ -410,7 +350,6 @@ fun setDirective(rules: String, key: String, value: String): String {
 fun basis(model: AppModel): String {
     val p = model.prefs
     return when (p.getString(Config.KEY_MODE, Config.MODE_CATEGORY)) {
-        Config.MODE_RULES -> "내 규칙으로만 정리"
         Config.MODE_AI -> "AI가 내 지시대로 정리"
         Config.MODE_COLOR -> {
             val idx = COLOR_METHODS.indexOf(p.getString(Config.KEY_COLOR_METHOD, "CENTROID")).coerceAtLeast(0)
@@ -420,15 +359,5 @@ fun basis(model: AppModel): String {
     }
 }
 
-private fun folderRuleSummary(rules: String, mode: String?): String {
-    val n = rules.split("\n").count { val t = it.trim(); t.isNotEmpty() && !t.startsWith("#") && !t.startsWith("!") }
-    if (n == 0) return "없음"
-    return if (mode == Config.MODE_AI) "${n}개 · AI 모드는 앱 지정·제외만 적용" else "${n}개"
-}
-
-private fun signalsSummary(model: AppModel): String {
-    val on = model.prefs.getString(Config.KEY_SIGNALS, Config.DEFAULT_SIGNALS)!!.split(",").map { it.trim() }
-    val names = mapOf("roles" to "앱 역할", "play" to "Play 데이터", "model" to "분류 모델", "declared" to "선언 카테고리")
-    val n = names.keys.count { it in on }
-    return (if (n == 0) "규칙만 사용" else "근거 ${n}가지") + " · 확신도 ${model.prefs.getInt(Config.KEY_THRESHOLD, Config.DEFAULT_THRESHOLD)}%"
-}
+private fun confidenceSummary(model: AppModel): String =
+    "${model.prefs.getInt(Config.KEY_THRESHOLD, Config.DEFAULT_THRESHOLD)}% 이상일 때만 이동"

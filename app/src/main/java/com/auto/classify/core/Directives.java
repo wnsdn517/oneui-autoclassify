@@ -10,6 +10,7 @@ package com.auto.classify.core;
  *   !배치 폴더먼저|앱먼저|그대로           folders before loose apps, or the reverse
  *   !최소앱 N                              apps needed before a new folder is made
  *   !폴더색 아이콘|카테고리|알록달록|기본|그대로  color folders by their apps' icons, by category, each differently, or reset
+ *   !아이콘모양 원형|사각|그대로           app icons in AutoClassify drawn as circles, squares, or as-is (module only)
  */
 public final class Directives {
 
@@ -32,6 +33,9 @@ public final class Directives {
     public static final String D_PLACEMENT = "배치";
     public static final String D_MIN_APPS = "최소앱";
     public static final String D_FOLDER_COLOR = "폴더색";
+    public static final String D_ICON_SHAPE = "아이콘모양";
+    public static final String CIRCLE = "원형";
+    public static final String SQUARE = "사각";
 
     public String insideSort = KEEP;
     public String looseSort = KEEP;
@@ -40,6 +44,8 @@ public final class Directives {
     /** -1 = use the setting. */
     public int minApps = -1;
     public String folderColor = KEEP;
+    /** Module-side icon shape; not sent to the launcher. */
+    public String iconShape = KEEP;
 
     public boolean needsColor() {
         return COLOR.equals(insideSort) || COLOR.equals(looseSort) || COLOR.equals(folderSort);
@@ -74,6 +80,9 @@ public final class Directives {
                 case D_FOLDER_COLOR:
                     d.folderColor = v;
                     break;
+                case D_ICON_SHAPE:
+                    d.iconShape = v;
+                    break;
                 case D_MIN_APPS:
                     try {
                         d.minApps = Math.max(1, Integer.parseInt(v));
@@ -103,8 +112,10 @@ public final class Directives {
                 return v.matches("\\d+") && Integer.parseInt(v) >= 1 ? null : "!최소앱 뒤에는 1 이상의 숫자가 와야 합니다";
             case D_FOLDER_COLOR:
                 return oneOf(key, v, ICON, CATEGORY, RAINBOW, RESET, KEEP);
+            case D_ICON_SHAPE:
+                return oneOf(key, v, CIRCLE, SQUARE, KEEP);
             default:
-                return "알 수 없는 지시문 '!" + key + "' (가능: !폴더안정렬, !앱정렬, !폴더정렬, !배치, !최소앱, !폴더색)";
+                return "알 수 없는 지시문 '!" + key + "' (가능: !폴더안정렬, !앱정렬, !폴더정렬, !배치, !최소앱, !폴더색, !아이콘모양)";
         }
     }
 

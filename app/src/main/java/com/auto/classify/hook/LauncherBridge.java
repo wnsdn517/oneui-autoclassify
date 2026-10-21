@@ -96,6 +96,29 @@ final class LauncherBridge {
         return null;
     }
 
+    /**
+     * The folder grid {cols, rows} the launcher opens folders with (Folder.Grid, e.g. 3x4 or 4x4),
+     * read from the same PreferenceDataSource as applistGrid. null when it can't be read.
+     */
+    int[] folderGrid() {
+        Class<?> prefsCls = XposedHelpers.findClassIfExists(PREFERENCE_DATA_SOURCE, cl);
+        if (prefsCls == null) return null;
+        for (Field f : vm.getClass().getDeclaredFields()) {
+            if (!prefsCls.isAssignableFrom(f.getType())) continue;
+            try {
+                f.setAccessible(true);
+                Object prefs = f.get(vm);
+                if (prefs == null) continue;
+                Object p = XposedHelpers.callMethod(XposedHelpers.callMethod(prefs, "getFolderGrid"), "getValue");
+                if (p == null) continue;
+                int x = XposedHelpers.getIntField(p, "x"), y = XposedHelpers.getIntField(p, "y");
+                if (x > 0 && y > 0) return new int[]{x, y};
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
     /** Top-level entries of the apps screen (apps and folders, not folder children). */
     List<Object> topLevelItems() {
         Collection<?> wrappers = wrappers();

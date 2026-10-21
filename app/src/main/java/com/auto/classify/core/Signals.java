@@ -33,6 +33,8 @@ public final class Signals {
 
     private final Map<String, List<Hit>> hits = new HashMap<>();
     private final PackageManager pm;
+    /** "path@updateTime" to "is an LSPosed module"; kept across previews, so an APK is opened once until it changes. */
+    private static final Map<String, Boolean> XPOSED = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Queries the package manager once; reuse the instance for a whole batch. */
     public Signals(PackageManager pm) {
@@ -71,6 +73,20 @@ public final class Signals {
             "shizuku", "vector.manager", "hma", "hidemyapplist", "keyattestation", "integrity", "busybox", "mt.plus",
             "corepatch", "zygisk"};
 
+    /** Root words that only count in the label: "root" inside a package name is too common. */
+    private static final String[] ROOT_LABEL_WORDS = {"루팅", "root"};
+
+    /** Name evidence strong enough to beat store data (folder, then words; package or label). */
+    private static final String[][] STRONG_KEYWORDS = {
+            {"도구", "vpn", "orbot", "torbrowser", "torproject", "프록시", "proxy", "방화벽", "firewall",
+                    "tailscale", "wireguard", "zerotier"},
+            {"책·학습", "컴시간", "시간표", "timetable", "급식", "학교알리미"},
+            // Webtoon/web-novel apps: "카카오페이지" must not read as payment ("페이").
+            {"엔터테인먼트", "웹툰", "webtoon", "웹소설", "com.kakao.page"},
+            // Location spoofers and root "boosters" need root or hooks to do anything.
+            {"루팅·모듈", "fakegps", "fde.ai", "system.optimizer", "mockgps", "gpsspoof"},
+    };
+
     /** AI assistants: Play files them under Productivity, but people look for them together. */
     private static final String[] AI_WORDS = {"chatgpt", "openai", "claude", "anthropic", "gemini", "apps.bard",
             "perplexity", "copilot", "grok", "deepseek", "wrtn", "뤼튼", "character.ai", "에이닷", "clova", "클로바", "mistral"};
@@ -89,8 +105,24 @@ public final class Signals {
         String l = label == null ? "" : label.toLowerCase(java.util.Locale.ROOT).replace(" ", "");
         for (String w : ROOT_TOOL_WORDS) {
             if (p.contains(w) || l.contains(w)) {
-                out.add(new Hit("루팅·모듈", 0.9f, "루팅·후킹 도구"));
+                out.add(new Hit("루팅·모듈", 0.97f, "루팅·후킹 도구"));
                 break;
+            }
+        }
+        for (String w : ROOT_LABEL_WORDS) {
+            if (l.contains(w)) {
+                out.add(new Hit("루팅·모듈", 0.97f, "루팅 이름: " + w));
+                break;
+            }
+        }
+        // Names that say what the app is. Store data often files these elsewhere (Orbot as Communication),
+        // so they outweigh the store's 0.93.
+        for (String[] k : STRONG_KEYWORDS) {
+            for (int i = 1; i < k.length; i++) {
+                if (l.contains(k[i]) || p.contains(k[i])) {
+                    out.add(new Hit(k[0], 0.99f, "이름 강조: " + k[i]));
+                    break;
+                }
             }
         }
         for (String w : AI_WORDS) {
@@ -138,14 +170,19 @@ public final class Signals {
     };
 
     /** LSPosed's newer module API declares itself in META-INF/xposed/ instead of meta-data. */
-    private static boolean modernXposed(ApplicationInfo ai) {
+    private boolean modernXposed(ApplicationInfo ai) {
         if (ai.sourceDir == null) return false;
+        String key = ai.sourceDir + "@" + new java.io.File(ai.sourceDir).lastModified();
+        Boolean cached = XPOSED.get(key);
+        if (cached != null) return cached;
+        boolean found = false;
         try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(ai.sourceDir)) {
-            return zip.getEntry("META-INF/xposed/java_init.list") != null
+            found = zip.getEntry("META-INF/xposed/java_init.list") != null
                     || zip.getEntry("META-INF/xposed/module.prop") != null;
-        } catch (java.io.IOException e) {
-            return false;
+        } catch (java.io.IOException ignored) {
         }
+        XPOSED.put(key, found);
+        return found;
     }
 
     private void activity(Intent intent, String folder, float weight, String reason) {

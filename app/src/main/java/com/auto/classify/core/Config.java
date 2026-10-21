@@ -14,8 +14,6 @@ public final class Config {
     public static final String KEY_MODE = "mode";
     public static final String MODE_CATEGORY = "category";
     public static final String MODE_COLOR = "color";
-    /** Only the user's rules move apps; no automatic categories. */
-    public static final String MODE_RULES = "rules";
     /** Folders the AI chose from the user's instruction (KEY_AI_MAP); rules still win. */
     public static final String MODE_AI = "ai";
     /** AI assignment, JSON {pkg: folder}; Classifier.LOOSE = outside folders. */
@@ -31,12 +29,24 @@ public final class Config {
     public static final String KEY_AI_PAGES = "ai_pages";
     /** Folder order the AI chose, JSON array of folder names; folders not named follow in their current order. */
     public static final String KEY_AI_ORDER = "ai_order";
+    /** Page inside a folder the AI chose for single apps, JSON {pkg: "folder|page"}; applies while the app is in that folder. */
+    public static final String KEY_AI_APP_PAGES = "ai_app_pages";
     /** Folder colors the AI chose, JSON {folder: color name or #RRGGBB}. */
     public static final String KEY_AI_COLORS = "ai_colors";
     /** Notes the AI keeps between requests (one per line); see ai.AiMemo. */
     public static final String KEY_AI_MEMO = "ai_memo";
     /** Packages never touched, one per line. */
     public static final String KEY_EXCLUDED = "excluded";
+    /** Apps the user marked as important for home recommendations, one per line. */
+    public static final String KEY_FAVORITES = "favorites";
+    /** Take an automatic backup before applying / restoring (default on). */
+    public static final String KEY_AUTO_BACKUP = "auto_backup";
+    /** How many automatic backups to keep (oldest pruned). */
+    public static final String KEY_BACKUP_KEEP = "backup_keep";
+    /** Rules the user switched off (kept aside, not applied). One rule line per line. */
+    public static final String KEY_RULES_OFF = "rules_off";
+    /** Unsent AI instruction draft in AI mode, so it survives tab switches. */
+    public static final String KEY_AI_DRAFT = "ai_draft";
     /** When true, apps the user moved out of an auto folder are left alone afterwards. */
     public static final String KEY_SKIP_MOVED = "skip_moved";
     /** Take apps out of automatic folders that no longer fit the current settings. */
@@ -54,8 +64,7 @@ public final class Config {
     public static final String KEY_SCREEN_OFF_TIDY = "screen_off_tidy";
     /** Detailed categories (소셜 and 소통 apart, …) instead of the broad default groups. */
     public static final String KEY_DETAILED = "detailed_categories";
-    /** Category evidence to use, comma-separated SmartClassifier.SIG_* ids. */
-    public static final String KEY_SIGNALS = "signals";
+    /** Category evidence: all of these are always used (not user-configurable), comma-separated SmartClassifier.SIG_* ids. */
     public static final String DEFAULT_SIGNALS = "roles,play,model,declared";
     /** Minimum combined confidence (percent) before an app is moved. */
     public static final String KEY_THRESHOLD = "threshold";
@@ -91,8 +100,8 @@ public final class Config {
      * Saved with each backup; restored only when the user asks for it. Runtime state is not in here.
      */
     public static final String[] INSTRUCTION_KEYS = {
-            KEY_RULES, KEY_EXCLUDED, KEY_RULE_FOLDERS, KEY_FOLDER_NAMES, KEY_AI_NOTE, KEY_AI_MEMO,
-            KEY_AI_MAP, KEY_AI_PAGES, KEY_AI_ORDER, KEY_AI_COLORS, KEY_UNCLASSIFIED,
+            KEY_RULES, KEY_RULES_OFF, KEY_EXCLUDED, KEY_RULE_FOLDERS, KEY_FOLDER_NAMES, KEY_AI_NOTE, KEY_AI_MEMO,
+            KEY_AI_MAP, KEY_AI_PAGES, KEY_AI_ORDER, KEY_AI_APP_PAGES, KEY_AI_COLORS, KEY_UNCLASSIFIED,
             KEY_UNCLASSIFIED_FOLDER, KEY_UNCLASSIFIED_PAGE, KEY_DETAILED,
     };
 
@@ -123,7 +132,7 @@ public final class Config {
             "# 형식: 폴더이름|토큰,토큰,...  (=라벨 정확히 일치, pkg:패키지 접두사, 폴더이름 - 는 제외)\n"
                     + "# 위에서 먼저 맞는 줄이 우선, 규칙이 없으면 앱이 선언한 카테고리로 분류\n"
                     + "-|com.samsung.knox.securefolder\n"
-                    + "Google|pkg:com.google.\n"
+                    + "Google|pkg:com.google.,pkg:com.android.vending,pkg:com.android.chrome\n"
                     + "AI|chatgpt,claude,gemini,perplexity,copilot\n";
 
     private Config() {

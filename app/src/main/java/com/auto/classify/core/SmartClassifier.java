@@ -124,13 +124,6 @@ public final class SmartClassifier {
         return applyRules(rules, pkg, label, grouped(auto), renames, () -> Developers.of(pm, pkg), auto == null ? null : auto.folder);
     }
 
-    /** "내 규칙" mode: only rule hits move apps; the automatic category is just for cat: tokens. */
-    public Result rulesOnly(String pkg, String label) {
-        Result auto = automatic(pkg, label);
-        Result r = applyRules(rules, pkg, label, grouped(auto), renames, () -> Developers.of(pm, pkg), auto == null ? null : auto.folder);
-        return r != null && r.reason != null && r.reason.startsWith("사용자 규칙") ? r : null;
-    }
-
     /** True (default): related categories share one folder (메신저 + SNS = 소통). */
     public boolean broad = true;
 

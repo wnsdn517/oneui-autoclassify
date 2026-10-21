@@ -11,8 +11,8 @@ android {
         applicationId 'com.auto.classify'
         minSdk 35
         targetSdk 35
-        versionCode 60
-        versionName '0.19.6'
+        versionCode 67
+        versionName '0.20.0'
     }
 
     buildTypes {
@@ -32,6 +32,13 @@ android {
     buildFeatures {
         compose true
         buildConfig true
+    }
+
+    // Extract native libs: DexKit's libdexkit.so is stored unaligned in the APK, so dlopen from inside it fails.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 

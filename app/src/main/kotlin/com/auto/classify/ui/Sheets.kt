@@ -57,6 +57,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -72,8 +73,8 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 // ---- shared ----------------------------------------------------------------------------------
 
 @Composable
-fun Hint(text: String) {
-    Text(text, Modifier.padding(vertical = 4.dp), style = MiuixTheme.textStyles.body2,
+fun Hint(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier.padding(vertical = 4.dp), style = MiuixTheme.textStyles.body2,
         color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 }
 
@@ -185,29 +186,37 @@ private val AI_EXAMPLES = listOf(
     "폴더는 3개 이상일 때만 만들어줘",
 )
 
-/** "말로 규칙 만들기": the built-in parser, or the AI with the user's key. */
+/** "말로 규칙 만들기": the AI with the user's key (entry is disabled without one). */
 @Composable
 fun AiSheet(model: AppModel, onClose: () -> Unit) {
     val context = LocalContext.current
     val p = model.prefs
-    var request by remember { mutableStateOf("") }
+    // Unsent input survives the sheet closing; reopening restores it.
+    var request by remember { mutableStateOf(model.ruleDraft) }
+    androidx.compose.runtime.LaunchedEffect(request) { model.ruleDraft = request }
     val hasKey = remember { ApiLlm.fromPrefs(context) != null }
-    var engine by remember { mutableStateOf(if (hasKey && p.getString(Config.KEY_AI_ENGINE, "online") != "offline") 1 else 0) }
     var running by remember { mutableStateOf(false) }
     var streamed by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<RuleAssistant.Result?>(null) }
     var edited by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var showExamples by remember { mutableStateOf(false) }
+    var confirmClose by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    WindowBottomSheet(show = true, title = "말로 규칙 만들기", onDismissRequest = onClose) {
+    /** Applied results clear the draft; anything else keeps it. */
+    fun applied() {
+        model.ruleDraft = ""
+        request = ""
+        onClose()
+    }
+    fun dismiss() {
+        if (request.isBlank()) onClose() else confirmClose = true
+    }
+
+    WindowBottomSheet(show = true, title = "말로 규칙 만들기", onDismissRequest = ::dismiss) {
         Column(Modifier.heightIn(max = 680.dp).verticalScroll(rememberScrollState())) {
-            SegTabs(listOf("기본", "AI"), engine, {
-                engine = it
-                model.edit({ putString(Config.KEY_AI_ENGINE, if (it == 0) "offline" else "online") }, reload = false)
-            })
-            if (engine == 1 && !hasKey) Hint("설정에서 AI를 연결하세요")
+            if (!hasKey) Hint("설정에서 AI를 연결하세요")
             TextField(
                 value = request,
                 onValueChange = { request = it },
@@ -236,14 +245,18 @@ fun AiSheet(model: AppModel, onClose: () -> Unit) {
                 onClick = {
                     val text = request.trim()
                     if (text.isEmpty()) return@TextButton
+                    val llm = ApiLlm.fromPrefs(context)
+                    if (llm == null) {
+                        error = "AI가 연결되어 있지 않아요. 설정 탭에서 API 키를 입력하세요."
+                        return@TextButton
+                    }
                     running = true
                     streamed = ""
                     error = null
                     scope.launch {
                         val r = runCatching {
                             withContext(Dispatchers.IO) {
-                                if (engine == 0) RuleAssistant.runOffline(context, text, model.folders)
-                                else RuleAssistant.run(context, ApiLlm.fromPrefs(context), text, model.folders) { t -> streamed = t }
+                                RuleAssistant.run(context, llm, text, model.folders) { t -> streamed = t }
                             }
                         }
                         running = false
@@ -254,7 +267,7 @@ fun AiSheet(model: AppModel, onClose: () -> Unit) {
                         }.onFailure { error = "실패: ${it.message}" }
                     }
                 },
-                enabled = !running && (engine == 0 || hasKey),
+                enabled = !running && hasKey,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(52.dp),
                 colors = ButtonDefaults.textButtonColorsPrimary(),
             )
@@ -276,18 +289,35 @@ fun AiSheet(model: AppModel, onClose: () -> Unit) {
                     if (err == null) {
                         model.saveRules(edited)
                         model.toast("규칙을 바꿨어요. 미리보기로 확인해 보세요")
-                        onClose()
+                        applied()
                     }
                 }, "추가하기", {
                     if (err == null) {
                         val old = p.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!
                         model.edit({ putString(Config.KEY_RULES, mergeRules(edited, old)) })
                         model.toast("규칙에 추가했어요. 미리보기로 확인해 보세요")
-                        onClose()
+                        applied()
                     }
                 }, primaryEnabled = err == null && edited.isNotBlank())
             }
             Spacer(Modifier.height(16.dp))
+        }
+    }
+    if (confirmClose) {
+        WindowDialog(
+            show = true,
+            title = "입력 중인 내용을 저장할까요?",
+            summary = "저장하면 다음에 열 때 이어서 쓸 수 있어요.",
+            onDismissRequest = { confirmClose = false },
+        ) {
+            SheetActions("버리기", {
+                confirmClose = false
+                model.ruleDraft = ""
+                onClose()
+            }, "저장", {
+                confirmClose = false
+                onClose()
+            })
         }
     }
 }
@@ -310,26 +340,8 @@ fun mergeRules(newRules: String, old: String): String {
 @Composable
 fun SignalsSheet(model: AppModel, onClose: () -> Unit) {
     model.settingsVersion
-    val on = model.prefs.getString(Config.KEY_SIGNALS, Config.DEFAULT_SIGNALS)!!.split(",").map { it.trim() }.toMutableSet()
-    val items = listOf(
-        Triple("roles", "앱 역할·구성요소", "브라우저·전화·카메라·키보드·Xposed 모듈 등 시스템이 아는 역할, 이름 키워드"),
-        Triple("play", "Play 스토어 데이터", "인기 앱 18만 개의 실제 카테고리 (내장)"),
-        Triple("model", "분류 모델", "패키지명·앱 이름으로 추정 (230만 앱 학습, Naive Bayes)"),
-        Triple("declared", "앱이 선언한 카테고리", "개발자가 manifest에 적은 값"),
-    )
-    WindowBottomSheet(show = true, title = "분류 근거", onDismissRequest = onClose) {
+    WindowBottomSheet(show = true, title = "확신도", onDismissRequest = onClose) {
         Column {
-            items.forEach { (id, title, summary) ->
-                model.settingsVersion
-                SwitchPreference(
-                    checked = id in on,
-                    onCheckedChange = { v ->
-                        if (v) on.add(id) else on.remove(id)
-                        model.edit({ putString(Config.KEY_SIGNALS, on.joinToString(",")) })
-                    },
-                    title = title, summary = summary,
-                )
-            }
             IntSlider(model, Config.KEY_THRESHOLD, Config.DEFAULT_THRESHOLD, 30..99, "최소 확신도", "%")
             Spacer(Modifier.height(16.dp))
         }
@@ -367,7 +379,7 @@ fun RulesTextSheet(model: AppModel, onClose: () -> Unit) {
         "한 줄에 하나 · 폴더이름[@페이지]|토큰,토큰\n토큰: 이름 일부 · =정확한 이름 · pkg:패키지(com.google.* 가능) · " +
             "re:정규식(쉼표 없이) · dev:개발자 · cat:카테고리 · *\n" +
             "폴더이름#빨강 / #FF5722 로 폴더 색 · (폴더밖) 꺼내기 · (제외) 건드리지 않기\n" +
-            "!폴더안정렬 · !앱정렬 · !폴더정렬 · !배치 · !최소앱 · !폴더색 아이콘|카테고리|기본",
+            "!폴더안정렬 · !앱정렬 · !폴더정렬 · !배치 · !최소앱 · !폴더색 아이콘|카테고리|기본 · !아이콘모양 원형|사각",
         model.prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)!!,
         { Classifier.validate(it) },
         { model.saveRules(it) },
@@ -505,6 +517,97 @@ fun ruleWarnings(context: Context, rulesText: String, apps: List<Pair<String, St
 }
 
 @Composable
+/** One rule row per item (tap to edit, ≡ handle to reorder); shared by the rules tab and sheet. */
+fun RuleRows(
+    model: AppModel,
+    items: androidx.compose.runtime.snapshots.SnapshotStateList<RuleItem>,
+    warnings: List<RuleWarning?>,
+    labels: Map<String, String>,
+    onEdit: (Int, RuleItem) -> Unit,
+    onSave: () -> Unit,
+    /** When set, an on/off switch sits opposite the title; the sheet leaves it off. */
+    onToggle: ((RuleItem) -> Unit)? = null,
+) {
+    var dragIndex by remember { mutableStateOf(-1) }
+    var dragOffset by remember { mutableStateOf(0f) }
+    val heights = remember { mutableStateMapOf<RuleItem, Int>() }
+    if (items.isEmpty()) Hint("규칙 없음", Modifier.padding(horizontal = 16.dp))
+    items.forEachIndexed { i, it ->
+        key(it) {
+            val title = ruleSubject(it, labels)
+            val summary = when (it.kind) {
+                1 -> "→ 폴더 밖으로"
+                2 -> "→ 그대로 두기"
+                else -> "→ " + it.folder + " 폴더"
+            } + (if (it.page > 0) " · ${it.page}페이지" else "") + (if (it.color.isNotBlank()) " · ${it.color}" else "")
+            val dragging = dragIndex == i
+            Row(
+                Modifier.fillMaxWidth().zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer { translationY = if (dragging) dragOffset else 0f; shadowElevation = if (dragging) 12f else 0f }
+                    .background(if (dragging) MiuixTheme.colorScheme.surfaceContainerHigh else androidx.compose.ui.graphics.Color.Transparent,
+                        RoundedCornerShape(16.dp))
+                    .onSizeChanged { s -> heights[it] = s.height },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    ArrowPreference(
+                        title = "${i + 1}. $title",
+                        summary = summary,
+                        onClick = { onEdit(items.indexOf(it), it.copy()) },
+                    )
+                }
+                warnings.getOrNull(i)?.takeIf { _ -> dragIndex < 0 }?.let { w ->
+                    val tint = if (w.severe) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    Text(
+                        w.label,
+                        Modifier.clip(RoundedCornerShape(50)).background(tint.copy(alpha = 0.12f))
+                            .clickable { model.toast(w.text) }.padding(horizontal = 10.dp, vertical = 4.dp),
+                        style = MiuixTheme.textStyles.footnote1, color = tint, maxLines = 1,
+                    )
+                }
+                onToggle?.let { toggle ->
+                    val rule = it
+                    Switch(
+                        checked = true,
+                        onCheckedChange = { on -> if (!on) toggle(rule) },
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+                // ≡ handle: drag up/down to change the order.
+                Text(
+                    "≡",
+                    Modifier.size(48.dp).wrapContentSize().pointerInput(it) {
+                        detectVerticalDragGestures(
+                            onDragStart = { _ -> dragIndex = items.indexOf(it); dragOffset = 0f },
+                            onVerticalDrag = { ch, dy ->
+                                ch.consume()
+                                dragOffset += dy
+                                val idx = dragIndex
+                                if (idx < 0) return@detectVerticalDragGestures
+                                val below = items.getOrNull(idx + 1)
+                                val above = items.getOrNull(idx - 1)
+                                if (below != null && dragOffset > (heights[below] ?: 150) / 2f) {
+                                    dragOffset -= heights[below] ?: 150
+                                    items.add(idx + 1, items.removeAt(idx))
+                                    dragIndex = idx + 1
+                                } else if (above != null && dragOffset < -(heights[above] ?: 150) / 2f) {
+                                    dragOffset += heights[above] ?: 150
+                                    items.add(idx - 1, items.removeAt(idx))
+                                    dragIndex = idx - 1
+                                }
+                            },
+                            onDragEnd = { dragIndex = -1; dragOffset = 0f; onSave() },
+                            onDragCancel = { dragIndex = -1; dragOffset = 0f; onSave() },
+                        )
+                    },
+                    fontSize = 22.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun RulesSheet(model: AppModel, onText: () -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
     var reload by remember { mutableStateOf(0) }
@@ -513,16 +616,13 @@ fun RulesSheet(model: AppModel, onText: () -> Unit, onClose: () -> Unit) {
     val others = remember(reload) { raw.lines().map { it.trim() }.filter { it.startsWith("#") || it.startsWith("!") } }
     val items = remember(reload) { mutableStateListOf<RuleItem>().apply { raw.lines().mapNotNullTo(this) { l -> RuleItem.parse(l.trim()).takeIf { !l.trim().startsWith("#") && !l.trim().startsWith("!") } } } }
     var editing by remember { mutableStateOf<Pair<Int, RuleItem>?>(null) }
-    var dragIndex by remember { mutableStateOf(-1) }
-    var dragOffset by remember { mutableStateOf(0f) }
-    val heights = remember { mutableStateMapOf<RuleItem, Int>() }
     var apps by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     LaunchedEffect(Unit) { apps = withContext(Dispatchers.IO) { launchableApps(context) } }
     val labels = apps.toMap()
     val rulesText = items.joinToString("\n") { it.toLine() }
     var warnings by remember { mutableStateOf<List<RuleWarning?>>(emptyList()) }
     LaunchedEffect(rulesText, apps) {
-        if (apps.isNotEmpty() && dragIndex < 0) warnings = withContext(Dispatchers.IO) { ruleWarnings(context, rulesText, apps) }
+        if (apps.isNotEmpty()) warnings = withContext(Dispatchers.IO) { ruleWarnings(context, rulesText, apps) }
     }
 
     fun save() {
@@ -531,72 +631,9 @@ fun RulesSheet(model: AppModel, onText: () -> Unit, onClose: () -> Unit) {
 
     WindowBottomSheet(show = true, title = "폴더 규칙", onDismissRequest = onClose) {
         Column(Modifier.heightIn(max = 660.dp).verticalScroll(rememberScrollState())) {
-            if (items.isEmpty()) Hint("규칙 없음")
-            items.forEachIndexed { i, it ->
-              key(it) {
-                val title = ruleSubject(it, labels)
-                val summary = when (it.kind) {
-                    1 -> "→ 폴더 밖으로"
-                    2 -> "→ 그대로 두기"
-                    else -> "→ " + it.folder + " 폴더"
-                } + (if (it.page > 0) " · ${it.page}페이지" else "") + (if (it.color.isNotBlank()) " · ${it.color}" else "")
-                val dragging = dragIndex == i
-                Row(
-                    Modifier.fillMaxWidth().zIndex(if (dragging) 1f else 0f)
-                        .graphicsLayer { translationY = if (dragging) dragOffset else 0f; shadowElevation = if (dragging) 12f else 0f }
-                        .background(if (dragging) MiuixTheme.colorScheme.surfaceContainerHigh else androidx.compose.ui.graphics.Color.Transparent,
-                            RoundedCornerShape(16.dp))
-                        .onSizeChanged { s -> heights[it] = s.height },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        ArrowPreference(
-                            title = "${i + 1}. $title",
-                            summary = summary,
-                            onClick = { editing = items.indexOf(it) to it.copy() },
-                        )
-                    }
-                    warnings.getOrNull(i)?.takeIf { _ -> dragIndex < 0 }?.let { w ->
-                        val tint = if (w.severe) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary
-                        Text(
-                            w.label,
-                            Modifier.clip(RoundedCornerShape(50)).background(tint.copy(alpha = 0.12f))
-                                .clickable { model.toast(w.text) }.padding(horizontal = 10.dp, vertical = 4.dp),
-                            style = MiuixTheme.textStyles.footnote1, color = tint, maxLines = 1,
-                        )
-                    }
-                    // ≡ handle: drag up/down to change the order.
-                    Text(
-                        "≡",
-                        Modifier.size(48.dp).wrapContentSize().pointerInput(it) {
-                            detectVerticalDragGestures(
-                                onDragStart = { _ -> dragIndex = items.indexOf(it); dragOffset = 0f },
-                                onVerticalDrag = { ch, dy ->
-                                    ch.consume()
-                                    dragOffset += dy
-                                    val idx = dragIndex
-                                    if (idx < 0) return@detectVerticalDragGestures
-                                    val below = items.getOrNull(idx + 1)
-                                    val above = items.getOrNull(idx - 1)
-                                    if (below != null && dragOffset > (heights[below] ?: 150) / 2f) {
-                                        dragOffset -= heights[below] ?: 150
-                                        items.add(idx + 1, items.removeAt(idx))
-                                        dragIndex = idx + 1
-                                    } else if (above != null && dragOffset < -(heights[above] ?: 150) / 2f) {
-                                        dragOffset += heights[above] ?: 150
-                                        items.add(idx - 1, items.removeAt(idx))
-                                        dragIndex = idx - 1
-                                    }
-                                },
-                                onDragEnd = { dragIndex = -1; dragOffset = 0f; save() },
-                                onDragCancel = { dragIndex = -1; dragOffset = 0f; save() },
-                            )
-                        },
-                        fontSize = 22.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                }
-              }
-            }
+            RuleRows(model, items, warnings, labels,
+                onEdit = { index, item -> editing = index to item },
+                onSave = ::save)
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton("템플릿 · 세트", { showSets = true }, Modifier.weight(1f))
                 TextButton("텍스트로 편집", onText, Modifier.weight(1f))
@@ -631,7 +668,7 @@ private val TEMPLATES = listOf(
 )
 
 private val MODE_LABELS = listOf(
-    Config.MODE_CATEGORY to "카테고리", Config.MODE_COLOR to "색상", Config.MODE_AI to "AI", Config.MODE_RULES to "규칙만",
+    Config.MODE_CATEGORY to "카테고리", Config.MODE_COLOR to "색상", Config.MODE_AI to "AI",
 )
 
 private fun ruleSets(model: AppModel): Map<String, String> = runCatching {
@@ -643,7 +680,7 @@ private const val KEY_RULE_SETS = "rule_sets"
 
 /** Replace all rules with a template or a saved set; save the current rules as a set. */
 @Composable
-private fun RuleSetsSheet(model: AppModel, onApplied: () -> Unit, onClose: () -> Unit) {
+fun RuleSetsSheet(model: AppModel, onApplied: () -> Unit, onClose: () -> Unit) {
     var sets by remember { mutableStateOf(ruleSets(model)) }
     var confirm by remember { mutableStateOf<Pair<String, String>?>(null) }
     var newName by remember { mutableStateOf("") }
@@ -729,7 +766,7 @@ fun ruleSubject(it: RuleItem, labels: Map<String, String>): String {
 }
 
 @Composable
-private fun RuleDialog(
+fun RuleDialog(
     model: AppModel, start: RuleItem, apps: List<Pair<String, String>>, isNew: Boolean,
     onDelete: () -> Unit, onSave: (RuleItem) -> Unit, onClose: () -> Unit,
 ) {

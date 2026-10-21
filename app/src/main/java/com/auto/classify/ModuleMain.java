@@ -247,6 +247,10 @@ public class ModuleMain implements IXposedHookLoadPackage {
     private static Engine.Settings loadPrefs() {
         XSharedPreferences p = new XSharedPreferences(Config.MODULE_PKG, Config.PREFS);
         p.reload();
+        // An empty read means the module's file wasn't found (e.g. after a reinstall, the launcher keeps the old path).
+        if (p.getAll().isEmpty()) Diag.check("prefs.read", Diag.F_CORE, false, Diag.WARN,
+                "모듈 설정을 읽지 못해 기본값으로 동작 중 (설정 진단에서 One UI 홈 다시 시작)");
+        else Diag.ok("prefs.read", Diag.F_CORE);
         Engine.Settings s = new Engine.Settings();
         s.enabled = p.getBoolean(Config.KEY_ENABLED, true);
         s.createFolders = p.getBoolean(Config.KEY_CREATE_FOLDERS, true);
@@ -257,9 +261,10 @@ public class ModuleMain implements IXposedHookLoadPackage {
         s.unclassifiedFolder = p.getString(Config.KEY_UNCLASSIFIED_FOLDER, "기타");
         s.unclassifiedPage = p.getInt(Config.KEY_UNCLASSIFIED_PAGE, 1);
         s.screenOffTidy = p.getBoolean(Config.KEY_SCREEN_OFF_TIDY, true);
-        // AI mode makes the folders it was asked for, single-app ones included; so does a minimum of 1.
-        com.auto.classify.hook.SingleFolders.enabled = s.minApps <= 1
-                || Config.MODE_AI.equals(p.getString(Config.KEY_MODE, Config.MODE_CATEGORY));
+        s.autoBackup = p.getBoolean(Config.KEY_AUTO_BACKUP, true);
+        s.backupKeep = p.getInt(Config.KEY_BACKUP_KEEP, 10);
+        // Folders that hold one app are kept whatever the minimum is; the minimum only decides when a new folder is made.
+        com.auto.classify.hook.SingleFolders.enabled = true;
         for (String f : p.getString(Config.KEY_DISABLED, "").split(",")) {
             if (!f.trim().isEmpty()) s.disabled.add(f.trim());
         }

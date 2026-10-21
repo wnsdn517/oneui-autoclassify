@@ -73,6 +73,7 @@ public final class RuleAssistant {
                     + "  !배치 폴더먼저|앱먼저|그대로          folders before apps, or apps before folders\n"
                     + "  !최소앱 N                             apps needed before a new folder is created\n"
                     + "  !폴더색 아이콘|카테고리|알록달록|기본|그대로   color folders by their apps' icons, by category, each a different color (알록달록), or reset\n"
+                    + "  !아이콘모양 원형|사각|그대로          app icons on the apps screen as circles, squares, or as-is\n"
                     + "FOLDER COLOR for one folder: FOLDER#COLOR, COLOR = 빨강 주황 노랑 초록 청록 파랑 보라 분홍 회색 흰색 검정 기본 or RRGGBB,\n"
                     + "  e.g. 놀이#빨강@2|cat:게임\n\n"
                     + "To keep a lasting preference or fact the user states for later requests, write  memo:<short note>  ; "

@@ -29,6 +29,8 @@ class AiTools(
             props("days" to num("look back this many days, 1-60, default 7"), "limit" to num("how many apps, default 40")), emptyList()))
         list.put(decl("app_info", "Details of installed apps matching a name or package: developer, install age, usage minutes, current folder.",
             props("query" to str("app name or package, part of it is fine")), listOf("query")))
+        list.put(decl("past_requests", "Earlier requests the user made to the AI, newest first, with the answer each got. Past requests are not part of your instruction; read them only when the current request refers to them.",
+            props("limit" to num("how many, 1-30, default 5")), emptyList()))
         if (webSearch != null) {
             list.put(decl("web_search", "Search the web for facts about an app or topic; returns a short answer.",
                 props("query" to str("what to look up")), listOf("query")))
@@ -41,6 +43,7 @@ class AiTools(
         "folder_contents" -> folderContents(args.optString("name"))
         "app_usage" -> appUsage(args.optInt("days", 7).coerceIn(1, 60), args.optInt("limit", 40).coerceIn(1, 150))
         "app_info" -> appInfo(args.optString("query"))
+        "past_requests" -> pastRequests(args.optInt("limit", 5).coerceIn(1, 30))
         "web_search" -> webSearch?.invoke(args.optString("query")) ?: error("웹 검색을 쓸 수 없어요")
         else -> error("알 수 없는 도구: $name")
     }
@@ -151,6 +154,21 @@ class AiTools(
         return out.toString()
     }
 
+    // ---- past requests --------------------------------------------------------------------
+
+    private fun pastRequests(limit: Int): String {
+        val entries = AiHistory.load(com.auto.classify.core.Prefs.open(context)).take(limit)
+        if (entries.isEmpty()) return "[]"
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.KOREA)
+        val out = JSONArray()
+        for (e in entries) {
+            out.put(JSONObject().put("time", fmt.format(java.util.Date(e.time)))
+                .put("request", e.request)
+                .put("answer", e.text.take(300)))
+        }
+        return out.toString()
+    }
+
     // ---- declaration helpers ---------------------------------------------------------------
 
     private fun str(desc: String) = JSONObject().put("type", "string").put("description", desc)
@@ -178,6 +196,7 @@ class AiTools(
             "folder_contents" -> "폴더 내용 확인"
             "app_usage" -> "앱 사용량 확인"
             "app_info" -> "앱 정보 확인"
+            "past_requests" -> "이전 요청 확인"
             "web_search" -> "웹 검색"
             else -> tool
         }

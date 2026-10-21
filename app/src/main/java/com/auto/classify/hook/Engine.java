@@ -55,6 +55,10 @@ public final class Engine {
         public String unclassifiedFolder = "기타";
         public int unclassifiedPage = 1;
         public boolean screenOffTidy = true;
+        /** Automatic backup before applying / restoring (user toggle). */
+        public boolean autoBackup = true;
+        /** How many backups to keep; oldest pruned on snapshot. */
+        public int backupKeep = 10;
         /** Feature ids (Diag.F_*) the user switched off after a failed self-check. */
         public Set<String> disabled = new HashSet<>();
     }
@@ -73,6 +77,7 @@ public final class Engine {
     private static final String GRID_URI = "content://com.sec.android.app.launcher.settings";
 
     private final Context context;
+    private boolean namesHooked;
     private final ClassLoader cl;
     private final Supplier<Settings> settingsLoader;
     /** The user's rules and AI instructions as JSON, saved with every backup. */
@@ -81,6 +86,10 @@ public final class Engine {
     private final Tracker tracker;
     private final Backup backup;
     private final Planner planner;
+    /** Separate instance so backup previews don't hold the live planner's lock while reading a copy. */
+    private final Planner backupPlanner;
+    /** Read-only layout snapshots of the live DB, so the layout reader doesn't block plan/apply on {@link #planner}. */
+    private final Planner snapshotPlanner;
 
     private Settings settings = new Settings();
     private volatile LauncherBridge bridge;
@@ -95,6 +104,8 @@ public final class Engine {
         this.tracker = new Tracker(context.getFilesDir());
         this.backup = new Backup(context);
         this.planner = new Planner(context);
+        this.backupPlanner = new Planner(context);
+        this.snapshotPlanner = new Planner(context);
         Diag.init(context);
         reload();
         selfCheck();
@@ -117,6 +128,9 @@ public final class Engine {
             Diag.check("db.schema", Diag.F_ORGANIZE, false, Diag.ERROR, "배치 DB를 열 수 없습니다: " + t);
         }
         planner.setGridSource(this::grid);
+        backupPlanner.setGridSource(this::grid);
+        snapshotPlanner.setGridSource(this::grid);
+        planner.setFolderGridSource(this::folderGrid);
         new Thread(this::checkGrid, "AutoClassify-grid").start();
         File probe = new File(context.getFilesDir(), "autoclassify_backup");
         if ((probe.isDirectory() || probe.mkdirs()) && probe.canWrite()
@@ -132,6 +146,8 @@ public final class Engine {
         int[] g = grid();
         if (g != null) {
             planner.setGrid(g[0], g[1]);
+            backupPlanner.setGrid(g[0], g[1]);
+            snapshotPlanner.setGrid(g[0], g[1]);
             Diag.ok("grid", Diag.F_ORGANIZE);
             log("앱스 화면 격자 " + g[0] + "x" + g[1]);
         } else {
@@ -162,6 +178,17 @@ public final class Engine {
         return null;
     }
 
+    /** The folder grid {cols, rows} the launcher uses for folders now; null when it can't be read. */
+    private int[] folderGrid() {
+        LauncherBridge b = bridge;
+        if (b == null) return null;
+        try {
+            return b.folderGrid();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private String launcherVersion() {
         try {
             return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
@@ -177,6 +204,11 @@ public final class Engine {
     public void attach(Object applistVm, Object honeyDataSource) {
         this.dataSource = honeyDataSource;
         this.bridge = new LauncherBridge(cl, applistVm, honeyDataSource);
+        if (!namesHooked) {
+            namesHooked = true;
+            new LauncherNames(context, cl, honeyDataSource).install();
+            new FolderLook(context, cl).install();
+        }
         new Thread(this::checkGrid, "AutoClassify-grid").start();
     }
 
@@ -187,6 +219,7 @@ public final class Engine {
             log("설정을 읽지 못해 기본값 사용: " + t);
             settings = new Settings();
         }
+        backup.setKeep(settings.backupKeep);
     }
 
     // ---- commands -----------------------------------------------------------------------
@@ -209,8 +242,7 @@ public final class Engine {
                 reload();
                 break;
             case "plan":
-                reload();
-                runPlan();
+                runPlan(); // reloads its own settings off this thread
                 break;
             case "apply":
                 reload();
@@ -237,7 +269,7 @@ public final class Engine {
             case "layout":
                 new Thread(() -> {
                     try {
-                        reply(Config.ACTION_LAYOUT, planner.currentLayout().toString());
+                        reply(Config.ACTION_LAYOUT, snapshotPlanner.currentLayout().toString());
                     } catch (Throwable t) {
                         Diag.failed(Diag.F_ORGANIZE, "layout", t);
                     }
@@ -253,6 +285,9 @@ public final class Engine {
                 break;
             case "restore":
                 restore(arg);
+                break;
+            case "delete":
+                deleteBackup(arg);
                 break;
             case "folders":
                 dumpFolders();
@@ -282,9 +317,14 @@ public final class Engine {
         }
         new Thread(() -> {
             try {
+                long t0 = System.currentTimeMillis();
+                reload();
+                long t1 = System.currentTimeMillis();
                 Planner.Plan plan = planner.plan(this::targets, settings.createFolders, settings.minApps);
+                long t2 = System.currentTimeMillis();
                 String json = plan.toJson().toString();
-                log("미리보기: " + plan.summary());
+                long t3 = System.currentTimeMillis();
+                log("미리보기: " + plan.summary() + " (설정 " + (t1 - t0) + "ms, 계획 " + (t2 - t1) + "ms, JSON " + (t3 - t2) + "ms)");
                 reply(Config.ACTION_PLAN, json);
             } catch (Throwable t) {
                 Diag.failed(Diag.F_ORGANIZE, "preview", t);
@@ -300,14 +340,16 @@ public final class Engine {
         }
         new Thread(() -> {
             try {
-                String snap = off(Diag.F_BACKUP) ? "없음" : snapshot();
+                boolean ab = !off(Diag.F_BACKUP) && settings.autoBackup;
+                String snap = ab ? snapshot() : "없음";
                 Planner.Plan plan = planner.apply(this::targets, settings.createFolders, settings.minApps);
                 if (plan.isEmpty()) {
                     report("이미 정리되어 있습니다");
                     return;
                 }
                 for (Planner.Move mv : plan.moves) tracker.filed(mv.app.pkg, mv.to, -1);
-                report("앱 " + plan.moves.size() + "개를 옮기고 페이지를 정리했습니다 (백업 " + snap + "). 홈을 다시 시작합니다");
+                report("앱 " + plan.moves.size() + "개를 옮기고 페이지를 정리했습니다"
+                        + (ab ? " (백업 " + snap + ")" : " (자동 백업 꺼짐)") + ". 홈을 다시 시작합니다");
                 // The launcher's in-memory model is now stale; a fresh process reloads it.
                 main.postDelayed(() -> Process.killProcess(Process.myPid()), 400);
             } catch (Throwable t) {
@@ -325,9 +367,11 @@ public final class Engine {
         }
         new Thread(() -> {
             try {
-                String snap = off(Diag.F_BACKUP) ? "없음" : snapshot();
+                boolean ab = !off(Diag.F_BACKUP) && settings.autoBackup;
+                String snap = ab ? snapshot() : "없음";
                 int n = planner.applyLayout(new JSONObject(json));
-                report("직접 배치한 대로 적용했습니다 (앱 " + n + "개 이동, 백업 " + snap + "). 홈을 다시 시작합니다");
+                report("직접 배치한 대로 적용했습니다 (앱 " + n + "개 이동"
+                        + (ab ? ", 백업 " + snap : ", 자동 백업 꺼짐") + "). 홈을 다시 시작합니다");
                 main.postDelayed(() -> Process.killProcess(Process.myPid()), 400);
             } catch (Throwable t) {
                 Diag.failed(Diag.F_ORGANIZE, "applylayout", t);
@@ -348,7 +392,7 @@ public final class Engine {
                 for (int i = names.length - 1; i >= 0; i--) {
                     JSONObject o = new JSONObject().put("name", names[i]);
                     File db = backup.file(names[i], "OneUI.db");
-                    if (db.exists()) o.put("layout", planner.layoutOf(backup.workingCopy(names[i])));
+                    if (db.exists()) o.put("layout", backupPlanner.layoutOf(backup.workingCopy(names[i])));
                     String instructions = backup.instructions(names[i]);
                     try {
                         if (instructions != null) o.put("instructions", new JSONObject(instructions));
@@ -392,6 +436,20 @@ public final class Engine {
         }, 400);
     }
 
+    /** Deletes one snapshot, then refreshes the list. Quiet on success (the app shows undo). */
+    private void deleteBackup(String name) {
+        if (off(Diag.F_BACKUP)) {
+            report("백업 기능이 꺼져 있습니다");
+            return;
+        }
+        if (name == null || name.isEmpty()) {
+            report("삭제할 백업을 지정하세요");
+            return;
+        }
+        if (backup.delete(name)) sendBackups();
+        else report("백업이 없어요: " + name);
+    }
+
     // ---- live filing of new installs ----------------------------------------------------
 
     public void onPackageAdded(String pkg) {
@@ -408,6 +466,9 @@ public final class Engine {
     /** New apps whose page placement should be fixed at the next screen off. */
     private final java.util.Set<String> pendingTidy = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
 
+    /** New apps the AI gave up on; asked again at the next screen off. */
+    private final java.util.Set<String> pendingAi = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+
     /** Screen off: fix new apps' pages if that is all the plan would change. */
     public void onScreenOff() {
         if (restartPending) {
@@ -416,6 +477,22 @@ public final class Engine {
             log("앱 이동 중 오류가 있어 화면이 꺼진 사이 홈을 다시 시작해요");
             main.postDelayed(() -> Process.killProcess(Process.myPid()), 300);
             return;
+        }
+        if (!pendingAi.isEmpty() && settings.enabled && !off(Diag.F_LIVE)) {
+            List<String> retry = new ArrayList<>();
+            synchronized (pendingAi) {
+                retry.addAll(pendingAi);
+                pendingAi.clear();
+            }
+            for (String pkg : retry) {
+                main.post(() -> {
+                    try {
+                        waitForApp(pkg, 0);
+                    } catch (Throwable t) {
+                        Diag.failed(Diag.F_LIVE, "file new app", t);
+                    }
+                });
+            }
         }
         if (pendingTidy.isEmpty() || !settings.screenOffTidy || off(Diag.F_ORGANIZE)) return;
         java.util.Set<String> mine = new java.util.HashSet<>(pendingTidy);
@@ -499,7 +576,9 @@ public final class Engine {
         int n = aiTries.merge(pkg, 1, Integer::sum);
         if (n > AI_RETRIES) {
             aiTries.remove(pkg);
-            log("새 앱 " + app(pkg) + ": AI가 계속 답하지 않아 그대로 둠 (정리할 때 분류돼요)");
+            // A manual tidy never asks the AI about an app, so retry at the next screen off instead.
+            pendingAi.add(pkg);
+            log("새 앱 " + app(pkg) + ": AI가 계속 답하지 않아 그대로 둠 (화면이 꺼질 때 다시 시도)");
             return;
         }
         log("새 앱 " + app(pkg) + ": AI 분류 실패 · 그대로 두고 잠시 후 다시 시도 (" + n + "/" + AI_RETRIES + ")");
@@ -687,6 +766,7 @@ public final class Engine {
             t.aiMode = r.getBoolean("aiMode");
             String[] folderOrder = r.getStringArray("folderOrder");
             if (folderOrder != null) t.folderOrder.addAll(Arrays.asList(folderOrder));
+            String[] folderPages = r.getStringArray("folderPages");
             t.unclassified = settings.unclassified;
             t.unclassifiedFolder = settings.unclassifiedFolder;
             t.unclassifiedPage = settings.unclassifiedPage;
@@ -699,6 +779,10 @@ public final class Engine {
                 if (settings.skipMoved && tracker.isDetached(pkg)) continue;
                 out.put(pkg, new String[]{folders[i], reasons == null ? null : reasons[i],
                         pages == null || pages[i] <= 0 ? null : String.valueOf(pages[i])});
+                // "folder|page" from the AI: the page inside that folder.
+                String fp = folderPages == null || i >= folderPages.length ? null : folderPages[i];
+                int bar = fp == null ? -1 : fp.lastIndexOf('|');
+                if (bar > 0) t.inFolderPage.put(pkg, new String[]{fp.substring(0, bar), fp.substring(bar + 1)});
             }
             Diag.ok("classifier", Diag.F_CORE);
         } catch (Throwable e) {
@@ -862,8 +946,8 @@ public final class Engine {
             try {
                 String latest = backup.latest();
                 if (latest != null && backup.file(latest, "OneUI.db").exists()) {
-                    String same = planner.layoutOf(backup.workingCopy(latest)).toString();
-                    if (same.equals(planner.currentLayout().toString())) {
+                    String same = backupPlanner.layoutOf(backup.workingCopy(latest)).toString();
+                    if (same.equals(snapshotPlanner.currentLayout().toString())) {
                         report("이미 백업되어 있어요 (" + latest + " 시점과 같은 상태)");
                         return;
                     }

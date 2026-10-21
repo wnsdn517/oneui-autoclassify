@@ -3,9 +3,14 @@ package com.auto.classify.ui
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.SnackbarDuration
+import top.yukonga.miuix.kmp.basic.SnackbarHost
+import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -68,12 +73,14 @@ class MainActivity : ComponentActivity() {
         }
         model = AppModel(this)
         ThemeChoice.mode = model.prefs.getString(ThemeChoice.KEY, "system")!!
+        FolderStyle.mode = model.prefs.getString(FolderStyle.KEY, "plain")!!
         setContent { AppTheme { MainScreen(model, this) } }
     }
 
     override fun onStart() {
         super.onStart()
         model.start()
+        pendingSticky?.let { showMessage(it); pendingSticky = null }
     }
 
     override fun onStop() {
@@ -81,11 +88,15 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    private var messageText by androidx.compose.runtime.mutableStateOf<String?>(null)
+    /** Miuix snackbar host; the message window shows it. */
+    private val snackbarState = SnackbarHostState()
+    private var messageSeq = 0
     private var messageView: androidx.compose.ui.platform.ComposeView? = null
-    private val hideMessage = Runnable { messageText = null }
-    private val removeMessage = Runnable {
-        messageView?.let { v -> runCatching { if (v.isAttachedToWindow) windowManager.removeViewImmediate(v) } }
+    /** Shown on the next start when no window was available (never a system toast). */
+    private var pendingSticky: String? = null
+
+    private fun removeMessageView() {
+        messageView?.let { v -> runCatching { (v.parent as? android.view.ViewGroup)?.removeView(v) } }
     }
 
     /**
@@ -93,35 +104,53 @@ class MainActivity : ComponentActivity() {
      * too, and a message inside the activity would sit under them.
      */
     fun showMessage(text: String) {
-        val token = window.decorView.windowToken ?: return
         val view = messageView ?: androidx.compose.ui.platform.ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@MainActivity)
             setViewTreeSavedStateRegistryOwner(this@MainActivity)
-            setContent { AppTheme { MessageBubble(messageText) } }
+            setContent {
+                AppTheme {
+                    SnackbarHost(snackbarState, Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+                }
+            }
         }.also { messageView = it }
-        val main = window.decorView
-        main.removeCallbacks(hideMessage)
-        main.removeCallbacks(removeMessage)
         // Re-add so it is above any sheet or dialog opened since.
-        runCatching { if (view.isAttachedToWindow) windowManager.removeViewImmediate(view) }
-        val lp = android.view.WindowManager.LayoutParams(
-            android.view.WindowManager.LayoutParams.MATCH_PARENT,
-            android.view.WindowManager.LayoutParams.WRAP_CONTENT,
-            android.view.WindowManager.LayoutParams.TYPE_APPLICATION,
-            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            android.graphics.PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = android.view.Gravity.BOTTOM
-            y = (110 * resources.displayMetrics.density).toInt()
-            this.token = token
-        }
-        if (runCatching { windowManager.addView(view, lp) }.isFailure) {
-            android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show()
+        runCatching { (view.parent as? android.view.ViewGroup)?.removeView(view) }
+        val token = window.decorView.windowToken
+        val windowOk = token != null && runCatching {
+            val lp = android.view.WindowManager.LayoutParams(
+                android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                android.view.WindowManager.LayoutParams.WRAP_CONTENT,
+                android.view.WindowManager.LayoutParams.TYPE_APPLICATION,
+                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                android.graphics.PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = android.view.Gravity.BOTTOM
+                y = (110 * resources.displayMetrics.density).toInt()
+                this.token = token
+            }
+            windowManager.addView(view, lp)
+        }.isSuccess
+        // No window token (or overlay failed): attach to the content itself, still in-app.
+        val decorOk = !windowOk && runCatching {
+            val root = window.decorView as? android.view.ViewGroup ?: error("no decor")
+            val lp = android.widget.FrameLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM,
+            ).apply { bottomMargin = (110 * resources.displayMetrics.density).toInt() }
+            root.addView(view, lp)
+        }.isSuccess
+        if (!windowOk && !decorOk) {
+            // Nothing could show it right now; surface it on the next start instead of a system toast.
+            pendingSticky = text
             return
         }
-        messageText = text
-        main.postDelayed(hideMessage, 3200)
-        main.postDelayed(removeMessage, 3700)
+        val seq = ++messageSeq
+        lifecycleScope.launch {
+            snackbarState.showSnackbar(text, duration = SnackbarDuration.Short)
+            // Only the newest message takes the window down.
+            if (seq == messageSeq) removeMessageView()
+        }
     }
 
     override fun onDestroy() {

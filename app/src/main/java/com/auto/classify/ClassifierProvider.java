@@ -9,6 +9,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.util.Log;
 
@@ -23,6 +24,8 @@ import com.auto.classify.core.SmartClassifier;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -47,6 +50,33 @@ public class ClassifierProvider extends ContentProvider {
     @Override
     public boolean onCreate() {
         return true;
+    }
+
+    /** Names and icon packages the user set in AutoClassify; the launcher hook reads them. */
+    private Bundle overrides() {
+        Context c = getContext();
+        Map<String, String> names = com.auto.classify.ui.AppOverrides.INSTANCE.names(c);
+        List<String> icons = com.auto.classify.ui.AppOverrides.INSTANCE.iconPackages(c);
+        Bundle out = new Bundle();
+        out.putStringArray("pkgs", names.keySet().toArray(new String[0]));
+        out.putStringArray("names", names.values().toArray(new String[0]));
+        out.putStringArray("icons", icons.toArray(new String[0]));
+        out.putString("folder_style", Prefs.open(c).getString("folder_style", "plain"));
+        out.putInt("folder_blur", Prefs.open(c).getInt("folder_blur", 30));
+        return out;
+    }
+
+    /** content://…/icon/&lt;pkg&gt; -> the custom icon PNG (192px). */
+    @Override
+    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
+        String path = uri.getPath();
+        String pkg = uri.getLastPathSegment();
+        if (path == null || !path.startsWith("/icon/") || pkg == null || !pkg.matches("[A-Za-z0-9_.]+")) {
+            throw new FileNotFoundException(String.valueOf(uri));
+        }
+        File f = com.auto.classify.ui.AppOverrides.INSTANCE.iconFile(getContext(), pkg);
+        if (!f.exists()) throw new FileNotFoundException(pkg);
+        return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
     }
 
     @Override
@@ -107,6 +137,7 @@ public class ClassifierProvider extends ContentProvider {
             }
             return out;
         }
+        if ("app_overrides".equals(method)) return overrides();
         if (!"classify".equals(method)) return null;
         if (!callerAllowed()) return null;
         String[] pkgs = extras == null ? null : extras.getStringArray("pkgs");
@@ -185,6 +216,8 @@ public class ClassifierProvider extends ContentProvider {
         // Folder color per app from its rule; NO_COLOR = the rule set none.
         int[] colors = new int[pkgs.length];
         java.util.Arrays.fill(colors, NO_COLOR);
+        // AI mode: "folder|page" per app, the page inside its folder; null = none.
+        String[] folderPages = new String[pkgs.length];
         Classifier rules = new Classifier(applyRules ? p.getString(Config.KEY_RULES, Config.DEFAULT_RULES) : null);
         if (applyRules) rememberRuleFolders(p, rules);
 
@@ -210,6 +243,7 @@ public class ClassifierProvider extends ContentProvider {
             Map<String, String> ai = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_MAP, ""));
             Map<String, String> aiPages = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_PAGES, ""));
             Map<String, String> aiColors = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_COLORS, ""));
+            Map<String, String> aiAppPages = com.auto.classify.ai.AiOrganizer.load(p.getString(Config.KEY_AI_APP_PAGES, ""));
             for (int i = 0; i < pkgs.length; i++) {
                 if (excluded.contains(pkgs[i])) continue;
                 String pk = pkgs[i];
@@ -237,12 +271,12 @@ public class ClassifierProvider extends ContentProvider {
                 reasons[i] = why;
                 pages[i] = aiPageOf(aiPages, folder);
                 colors[i] = aiColorOf(aiColors, folder);
+                // Stored as "folder|page"; only while the app is still in the folder the AI named.
+                String fp = aiAppPages.get(pk);
+                if (fp != null && fp.startsWith(folder + "|")) folderPages[i] = fp;
             }
         } else {
-            Set<String> signals = new HashSet<>();
-            for (String s : p.getString(Config.KEY_SIGNALS, Config.DEFAULT_SIGNALS).split(",")) {
-                if (!s.trim().isEmpty()) signals.add(s.trim());
-            }
+            Set<String> signals = new HashSet<>(java.util.Arrays.asList(Config.DEFAULT_SIGNALS.split(",")));
             SmartClassifier sc = new SmartClassifier(
                     rules,
                     signals,
@@ -254,8 +288,7 @@ public class ClassifierProvider extends ContentProvider {
             sc.broad = !"detail".equals(modeOverride) && !p.getBoolean(Config.KEY_DETAILED, false);
             for (int i = 0; i < pkgs.length; i++) {
                 if (excluded.contains(pkgs[i])) continue;
-                SmartClassifier.Result r = Config.MODE_RULES.equals(mode) ? sc.rulesOnly(pkgs[i], labels[i])
-                        : sc.classify(pkgs[i], labels[i]);
+                SmartClassifier.Result r = sc.classify(pkgs[i], labels[i]);
                 if (r == null) continue;
                 targets[i] = r.folder;
                 reasons[i] = r.reason;
@@ -280,6 +313,7 @@ public class ClassifierProvider extends ContentProvider {
             }
         }
         out.putIntArray("folderColors", colors);
+        out.putStringArray("folderPages", folderPages);
         out.putStringArray("autoNames", autoNames(p));
         out.putStringArray("excludedPkgs", excluded.toArray(new String[0]));
 

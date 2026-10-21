@@ -36,12 +36,23 @@ public final class Developers {
         return dev;
     }
 
+    /** Google apps that do not live under com.google.* (their signer is generic, so the namespace is "android"). */
+    private static final String[] GOOGLE_OUTSIDE_NAMESPACE = {
+            "com.android.vending", "com.android.chrome", "com.chrome.", "com.android.googlequicksearchbox"
+    };
+
     /** dev:X matches when X appears in the developer name or equals the package namespace. */
     public static boolean matches(String query, String developer, String pkg) {
         String q = query.toLowerCase(Locale.ROOT).replace(" ", "");
         if (q.isEmpty()) return false;
+        if (q.equals("google") && isGoogleOutsideNamespace(pkg)) return true;
         String d = developer == null ? "" : developer.toLowerCase(Locale.ROOT).replace(" ", "");
         return d.contains(q) || namespace(pkg).equalsIgnoreCase(q);
+    }
+
+    private static boolean isGoogleOutsideNamespace(String pkg) {
+        for (String p : GOOGLE_OUTSIDE_NAMESPACE) if (pkg.startsWith(p)) return true;
+        return false;
     }
 
     /** Second package segment for com/org/net/io/kr..., else the first. */

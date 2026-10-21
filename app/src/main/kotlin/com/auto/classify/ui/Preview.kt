@@ -34,13 +34,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.auto.classify.core.Directives
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.width
@@ -51,9 +55,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -70,21 +76,37 @@ private val iconCache = LruCache<String, ImageBitmap>(300)
 @Composable
 fun AppIcon(pkg: String?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val bitmap by produceState(iconCache.get(pkg ?: ""), pkg) {
+    // Reading the version subscribes to overrides; the key carries this app's icon stamp, so only a changed icon reloads.
+    AppOverrides.version
+    val key = "${pkg ?: ""}#${AppOverrides.iconStamp(pkg ?: "")}"
+    val bitmap by produceState(iconCache.get(key), key) {
         if (value == null && pkg != null) {
             value = withContext(Dispatchers.IO) {
                 runCatching {
-                    val d = context.packageManager.getApplicationIcon(pkg)
-                    val b = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
-                    d.setBounds(0, 0, 96, 96)
-                    d.draw(Canvas(b))
-                    b.asImageBitmap().also { iconCache.put(pkg, it) }
+                    val b = AppOverrides.customIcon(context, pkg) ?: run {
+                        val d = context.packageManager.getApplicationIcon(pkg)
+                        Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888).also {
+                            d.setBounds(0, 0, 96, 96)
+                            d.draw(Canvas(it))
+                        }
+                    }
+                    b.asImageBitmap().also { iconCache.put(key, it) }
                 }.getOrNull()
             }
         }
     }
     val b = bitmap
-    if (b != null) Image(b, null, modifier) else Box(modifier.background(MiuixTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp)))
+    val shaped = when (IconShape.mode) {
+        Directives.CIRCLE -> modifier.clip(CircleShape)
+        Directives.SQUARE -> modifier.clip(RoundedCornerShape(12.dp))
+        else -> modifier
+    }
+    if (b != null) Image(b, null, shaped) else Box(modifier.background(MiuixTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp)))
+}
+
+/** Icon shape from the !아이콘모양 directive ("" = as-is). AppModel keeps it in step with the rules. */
+object IconShape {
+    var mode by mutableStateOf("")
 }
 
 /**
@@ -97,12 +119,17 @@ fun LayoutPages(
     layout: JSONObject?, modifier: Modifier = Modifier,
     onMove: ((pkg: String, folder: String?) -> Unit)? = null,
     maxGridHeight: androidx.compose.ui.unit.Dp = androidx.compose.ui.unit.Dp.Infinity,
+    stacked: Boolean = false,
+    labels: Boolean = true,
 ) {
     if (layout == null) return
+    val scope = rememberCoroutineScope()
     val cols = layout.optInt("cols", 4).coerceAtLeast(1)
     val rows = layout.optInt("rows", 6).coerceAtLeast(1)
     val pages = layout.optJSONArray("pages") ?: JSONArray()
     val pager = rememberPagerState { pages.length().coerceAtLeast(1) }
+    val pageRatio = screenRatio()
+    val wallpaper = rememberWallpaper()
     var openFolder by remember { mutableStateOf<JSONObject?>(null) }
     var picking by remember { mutableStateOf<JSONObject?>(null) }
     // Drag: the app being dragged, pointer in root coordinates, and the visible cells' bounds.
@@ -127,15 +154,19 @@ fun LayoutPages(
 
     Box(modifier.onGloballyPositioned { origin = it.positionInRoot() }) {
         Column {
-            HorizontalPager(pager, Modifier.fillMaxWidth(), pageSpacing = 12.dp, userScrollEnabled = dragged == null) { p ->
+            // Stacked: every page drawn one under another; otherwise swipe through them in a pager.
+            val pageGrid: @Composable (Int) -> Unit = { p ->
                 val items = pages.optJSONArray(p) ?: JSONArray()
-                val ratio = cols / (rows * 1.22f)
+                val ratio = pageRatio
                 androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val w = if (maxGridHeight == androidx.compose.ui.unit.Dp.Infinity) maxWidth else minOf(maxWidth, maxGridHeight * ratio)
-                Column(
-                    Modifier.width(w).aspectRatio(ratio)
-                        .clip(RoundedCornerShape(20.dp)).background(MiuixTheme.colorScheme.surfaceContainerHigh).padding(6.dp)
+                // Icons shrink with the cells, so a small backup grid does not let neighbours touch.
+                val icon = minOf(44.dp, w / cols * 0.6f)
+                androidx.compose.foundation.layout.BoxWithConstraints(
+                    Modifier.width(w).aspectRatio(ratio).clip(RoundedCornerShape(20.dp)).launcherBackdrop(wallpaper)
                 ) {
+                    SearchPill(maxHeight)
+                Column(Modifier.gridArea(maxHeight)) {
                     for (r in 0 until rows) {
                         Row(Modifier.weight(1f).fillMaxWidth()) {
                             for (c in 0 until cols) {
@@ -173,7 +204,8 @@ fun LayoutPages(
                                         } else Modifier
                                         Cell(
                                             it, drag.alpha(if (dragged === it) 0.3f else 1f),
-                                            highlight = hovered === it && !isApp,
+                                            iconSize = icon, highlight = hovered === it && !isApp,
+                                            labels = labels,
                                         ) { if (!isApp) openFolder = it else if (onMove != null) picking = it }
                                     }
                                 }
@@ -182,12 +214,18 @@ fun LayoutPages(
                     }
                 }
                 }
+                }
             }
-            Text(
-                "${pager.currentPage + 1} / ${pages.length()}",
-                Modifier.fillMaxWidth().padding(top = 6.dp), textAlign = TextAlign.Center,
-                style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
+            if (stacked) {
+                // Each page keeps its grid width, so the pages sit side by side and scroll sideways.
+                val pageWidth = if (maxGridHeight == androidx.compose.ui.unit.Dp.Infinity) 260.dp else maxGridHeight * pageRatio
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    for (p in 0 until pages.length()) Box(Modifier.width(pageWidth)) { pageGrid(p) }
+                }
+            } else {
+                HorizontalPager(pager, Modifier.fillMaxWidth(), pageSpacing = 12.dp, userScrollEnabled = dragged == null) { p -> pageGrid(p) }
+                PageDots(pages.length().coerceAtLeast(1), pager.currentPage) { i -> scope.launch { pager.animateScrollToPage(i) } }
+            }
         }
         dragged?.let { d ->
             val half = with(LocalDensity.current) { 26.dp.roundToPx() }
@@ -199,7 +237,10 @@ fun LayoutPages(
         }
     }
     openFolder?.let { f ->
-        FolderDialog(f, onApp = if (onMove != null) { a -> openFolder = null; picking = a } else null) { openFolder = null }
+        FolderDialog(
+            f, layout.optInt("folderCols", 3).coerceAtLeast(1), layout.optInt("folderRows", 4).coerceAtLeast(1), labels,
+            onApp = if (onMove != null) { a -> openFolder = null; picking = a } else null,
+        ) { openFolder = null }
     }
     picking?.let { a ->
         MoveDialog(a.optString("label"), folderNames, onPick = { folder ->
@@ -227,7 +268,10 @@ fun MoveDialog(label: String, folders: List<String>, onPick: (String?) -> Unit, 
 }
 
 @Composable
-private fun Cell(item: JSONObject, modifier: Modifier = Modifier, highlight: Boolean = false, onTap: () -> Unit) {
+private fun Cell(
+    item: JSONObject, modifier: Modifier = Modifier, iconSize: Dp = 44.dp, highlight: Boolean = false,
+    labels: Boolean = true, onTap: () -> Unit,
+) {
     val isFolder = item.optString("type") == "folder"
     Column(
         modifier.fillMaxSize().clip(RoundedCornerShape(12.dp))
@@ -237,49 +281,63 @@ private fun Cell(item: JSONObject, modifier: Modifier = Modifier, highlight: Boo
     ) {
         if (isFolder) {
             val apps = item.optJSONArray("apps") ?: JSONArray()
-            val tint = if (item.has("color")) androidx.compose.ui.graphics.Color(item.optInt("color"))
-                else MiuixTheme.colorScheme.surfaceContainerHighest
-            Column(
-                Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(tint)
-                    .padding(4.dp),
-                verticalArrangement = Arrangement.SpaceEvenly,
-            ) {
-                for (r in 0 until 2) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    for (c in 0 until 2) {
-                        val a = apps.optJSONObject(r * 2 + c)
-                        if (a != null) AppIcon(a.optString("pkg"), Modifier.size(16.dp)) else Spacer(Modifier.size(16.dp))
-                    }
-                }
-            }
+            LauncherFolderTile(
+                iconSize, if (item.has("color")) item.optInt("color") else null,
+                (0 until apps.length()).mapNotNull { apps.optJSONObject(it)?.optString("pkg") },
+            )
         } else {
-            AppIcon(item.optString("pkg"), Modifier.size(44.dp))
+            AppIcon(item.optString("pkg"), Modifier.size(iconSize))
         }
-        Text(
+        if (labels) Text(
             if (isFolder) item.optString("title") else item.optString("label"),
             Modifier.padding(top = 2.dp, start = 2.dp, end = 2.dp),
+            color = androidx.compose.ui.graphics.Color.White,
             fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
         )
     }
 }
 
 @Composable
-private fun FolderDialog(folder: JSONObject, onApp: ((JSONObject) -> Unit)? = null, onClose: () -> Unit) {
+private fun FolderDialog(
+    folder: JSONObject, cols: Int, rows: Int, labels: Boolean,
+    onApp: ((JSONObject) -> Unit)? = null, onClose: () -> Unit,
+) {
     val apps = folder.optJSONArray("apps") ?: JSONArray()
+    val cap = cols * rows
+    val pages = ((apps.length() + cap - 1) / cap).coerceAtLeast(1)
+    val pager = rememberPagerState { pages }
+    val scope = rememberCoroutineScope()
     WindowDialog(show = true, title = folder.optString("title").ifEmpty { "(이름 없음)" },
         summary = "앱 ${apps.length()}개",
         onDismissRequest = onClose) {
-        Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-            for (i in 0 until apps.length()) {
-                val a = apps.getJSONObject(i)
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                        .then(if (onApp != null) Modifier.clickable { onApp(a) } else Modifier).padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    AppIcon(a.optString("pkg"), Modifier.size(36.dp))
-                    Text(a.optString("label"), Modifier.padding(start = 12.dp))
+        Column(Modifier.fillMaxWidth()) {
+            // Same paging as the home pages: swipe sideways, dots below.
+            HorizontalPager(pager, Modifier.fillMaxWidth(), pageSpacing = 12.dp) { p ->
+                Column(Modifier.fillMaxWidth()) {
+                    for (r in 0 until rows) {
+                        Row(Modifier.fillMaxWidth()) {
+                            for (c in 0 until cols) {
+                                val a = apps.optJSONObject(p * cap + r * cols + c)
+                                Column(
+                                    Modifier.weight(1f).height(82.dp).clip(RoundedCornerShape(12.dp))
+                                        .then(if (a != null && onApp != null) Modifier.clickable { onApp(a) } else Modifier)
+                                        .padding(top = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    if (a != null) {
+                                        AppIcon(a.optString("pkg"), Modifier.size(48.dp))
+                                        if (labels) Text(
+                                            a.optString("label"), Modifier.padding(top = 4.dp, start = 2.dp, end = 2.dp),
+                                            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
+            if (pages > 1) PageDots(pages, pager.currentPage) { i -> scope.launch { pager.animateScrollToPage(i) } }
         }
     }
 }
@@ -291,10 +349,8 @@ fun PreviewSheet(model: AppModel, plan: JSONObject) {
     val created = plan.optJSONArray("created") ?: JSONArray()
     val emptied = plan.optJSONArray("emptied") ?: JSONArray()
     val changed = plan.optBoolean("changed", moves.length() > 0)
-    var showAfter by remember { mutableStateOf(0) }
     val after = plan.optJSONObject("after") ?: JSONObject()
     var editor by remember(plan) { mutableStateOf(EditorState.from(after)) }
-    var details by remember { mutableStateOf(false) }
     val close = { model.plan = null }
 
     // The grid gets what is left of the screen after the sheet's title, tabs and buttons.
@@ -319,51 +375,43 @@ fun PreviewSheet(model: AppModel, plan: JSONObject) {
                     if (!changed) "이미 정리되어 있어요"
                     else "앱 ${moves.length()}개 이동 · 새 폴더 ${created.length()}개"
                 )
-                SegTabs(listOf("변경 후", "변경 전"), showAfter, { showAfter = it }, Modifier.padding(vertical = 8.dp))
-                if (showAfter == 0) {
-                    LayoutEditor(editor, maxGridHeight = gridMax)
-                    if (com.auto.classify.ai.ApiLlm.fromPrefs(model.appContext) != null) {
-                        if (model.aiRunning) {
-                            WorkingText(model.aiStage, Modifier.padding(top = 8.dp))
-                            AppearingChips(model.aiFolders)
-                        } else {
-                            AiInput(model, after)
-                        }
-                        model.aiError?.let { ErrorText(it) }
-                        AiReply(model)
+                LayoutEditor(editor, maxGridHeight = gridMax)
+                if (com.auto.classify.ai.ApiLlm.fromPrefs(model.appContext) != null) {
+                    if (model.aiRunning) {
+                        WorkingText(model.aiStage, Modifier.padding(top = 8.dp))
+                        AppearingChips(model.aiFolders)
+                    } else {
+                        AiInput(model, after)
                     }
-                    if (editor.dirty) {
-                        Text(
-                            "직접 바꾼 배치가 있어요 · 되돌리기",
-                            Modifier.fillMaxWidth().clickable { editor = EditorState.from(after) }.padding(8.dp),
-                            textAlign = TextAlign.Center, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary,
-                        )
-                    }
-                } else {
-                    LayoutPages(plan.optJSONObject("before"), maxGridHeight = gridMax)
+                    model.aiError?.let { ErrorText(it) }
+                    AiReply(model)
+                }
+                if (editor.dirty) {
+                    Text(
+                        "직접 바꾼 배치가 있어요 · 되돌리기",
+                        Modifier.fillMaxWidth().clickable { editor = EditorState.from(after) }.padding(8.dp),
+                        textAlign = TextAlign.Center, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.primary,
+                    )
                 }
                 if (emptied.length() > 0) {
                     Hint("비게 되어 삭제: " + (0 until emptied.length()).joinToString(", ") { emptied.getString(it) })
                 }
                 if (moves.length() > 0) {
-                    ArrowPreference(
-                        title = "이동 내역 ${moves.length()}개",
-                        summary = if (details) "접기" else "펼쳐서 보기",
-                        onClick = { details = !details },
-                    )
-                    if (details) {
-                        for (i in 0 until moves.length()) {
-                            val m = moves.getJSONObject(i)
-                            val from = if (m.isNull("from")) "폴더 밖" else m.getString("from")
-                            val to = if (m.getString("to") == "(폴더밖)") "폴더 밖으로" else m.getString("to")
-                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                AppIcon(m.optString("pkg"), Modifier.size(32.dp))
-                                Column(Modifier.padding(start = 10.dp)) {
-                                    Text("${m.getString("label")}  ·  $from → $to", style = MiuixTheme.textStyles.body2)
-                                    val reason = m.optString("reason")
-                                    if (reason.isNotEmpty()) Text(reason, style = MiuixTheme.textStyles.footnote1,
-                                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                                }
+                    Text("이동 내역 ${moves.length()}개", Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        style = MiuixTheme.textStyles.title4)
+                    for (i in 0 until moves.length()) {
+                        val m = moves.getJSONObject(i)
+                        val from = if (m.isNull("from")) "폴더 밖" else m.getString("from")
+                        val to = if (m.getString("to") == "(폴더밖)") "폴더 밖으로" else m.getString("to")
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            AppIcon(m.optString("pkg"), Modifier.size(36.dp))
+                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                Text(m.getString("label"), style = MiuixTheme.textStyles.body1)
+                                Text("$from → $to", style = MiuixTheme.textStyles.body2,
+                                    color = MiuixTheme.colorScheme.primary)
+                                val reason = m.optString("reason")
+                                if (reason.isNotEmpty()) Text(reason, style = MiuixTheme.textStyles.footnote1,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                             }
                         }
                     }

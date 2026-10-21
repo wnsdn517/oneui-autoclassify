@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -63,6 +64,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.BlendColorEntry
+import top.yukonga.miuix.kmp.blur.BlurDefaults
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import top.yukonga.miuix.kmp.blur.textureBlur
+import top.yukonga.miuix.kmp.blur.highlight.Highlight
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 // ---- model --------------------------------------------------------------------------------------
@@ -75,11 +82,13 @@ class EItem(val key: String, val id: Int, val folder: Boolean, title: String, va
 }
 
 /** The apps screen as an editable list of pages; [toJson] is what "applylayout" writes. */
-class EditorState(val cols: Int, val rows: Int) {
+class EditorState(val cols: Int, val rows: Int, val folderCols: Int = 3, val folderRows: Int = 4) {
     val pages = mutableStateListOf<SnapshotStateList<EItem>>()
     var dirty by mutableStateOf(false)
     private var newIds = 0
     val capacity get() = cols * rows
+    /** Apps one folder page shows: the launcher's own folder grid (Folder.Grid), read by the hook. */
+    val folderCapacity get() = folderCols * folderRows
 
     fun newFolder(title: String) = EItem("new${++newIds}", -newIds, true, title, null, null)
 
@@ -123,7 +132,8 @@ class EditorState(val cols: Int, val rows: Int) {
             }
             ps.put(items)
         }
-        return JSONObject().put("cols", cols).put("rows", rows).put("pages", ps)
+        return JSONObject().put("cols", cols).put("rows", rows).put("folderCols", folderCols)
+            .put("folderRows", folderRows).put("pages", ps)
     }
 
     /** Folder of each app (title, or null when loose), for turning hand moves into rules. */
@@ -137,7 +147,10 @@ class EditorState(val cols: Int, val rows: Int) {
 
     companion object {
         fun from(layout: JSONObject): EditorState {
-            val s = EditorState(layout.optInt("cols", 4).coerceAtLeast(1), layout.optInt("rows", 6).coerceAtLeast(1))
+            val s = EditorState(
+                layout.optInt("cols", 4).coerceAtLeast(1), layout.optInt("rows", 6).coerceAtLeast(1),
+                layout.optInt("folderCols", 3).coerceAtLeast(1), layout.optInt("folderRows", 4).coerceAtLeast(1),
+            )
             val ps = layout.optJSONArray("pages") ?: JSONArray()
             for (p in 0 until ps.length()) {
                 val items = ps.optJSONArray(p) ?: continue
@@ -168,7 +181,8 @@ class EditorState(val cols: Int, val rows: Int) {
 
 // ---- editor -------------------------------------------------------------------------------------
 
-private const val FOLDER_COLS = 4
+/** Folder pages needed for [count] apps at [cap] per page (at least one). */
+private fun folderPages(count: Int, cap: Int) = ((count + cap - 1) / cap).coerceAtLeast(1)
 
 /**
  * Launcher-like editing: long-press an icon and drag; others make room, holding at the left or
@@ -186,6 +200,7 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
     var panelGridRect by remember { mutableStateOf(Rect.Zero) }
     var titleRect by remember { mutableStateOf(Rect.Zero) }
     var openFolder by remember { mutableStateOf<EItem?>(null) }
+    var folderPage by remember { mutableStateOf(0) }
     var openFrom by remember { mutableStateOf(Rect.Zero) }
 
     // Drag state
@@ -382,6 +397,7 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                                     gridRect.left + (i % state.cols) * cw, gridRect.top + (i / state.cols) * ch,
                                     gridRect.left + (i % state.cols + 1) * cw, gridRect.top + (i / state.cols + 1) * ch,
                                 )
+                                folderPage = 0
                                 openFolder = it
                             }
                         }
@@ -393,8 +409,9 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                     val f = openFolder
                     if (f != null) {
                         if (!panelGridRect.contains(p) || titleRect.contains(p)) return@awaitEachGesture
-                        val rowsInPanel = ((f.apps.size + FOLDER_COLS - 1) / FOLDER_COLS).coerceAtLeast(1)
-                        dragApp = f.apps.getOrNull(cellOf(p, panelGridRect, FOLDER_COLS, rowsInPanel)) ?: return@awaitEachGesture
+                        val pg = folderPage.coerceIn(0, folderPages(f.apps.size, state.folderCapacity) - 1)
+                        dragApp = f.apps.getOrNull(pg * state.folderCapacity +
+                            cellOf(p, panelGridRect, state.folderCols, state.folderRows)) ?: return@awaitEachGesture
                     } else {
                         if (!gridRect.contains(p)) return@awaitEachGesture
                         dragItem = currentPage()?.getOrNull(cellOf(p, gridRect, state.cols, state.rows)) ?: return@awaitEachGesture
@@ -411,8 +428,9 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                         val folder = openFolder
                         if (app != null && folder != null) {
                             if (panelRect.contains(hit())) {
-                                val rowsInPanel = ((folder.apps.size + FOLDER_COLS - 1) / FOLDER_COLS).coerceAtLeast(1)
-                                val to = cellOf(hit(), panelGridRect, FOLDER_COLS, rowsInPanel).coerceAtMost(folder.apps.size - 1)
+                                val pg = folderPage.coerceIn(0, folderPages(folder.apps.size, state.folderCapacity) - 1)
+                                val to = (pg * state.folderCapacity + cellOf(hit(), panelGridRect, state.folderCols, state.folderRows))
+                                    .coerceAtMost(folder.apps.size - 1)
                                 val from = folder.apps.indexOf(app)
                                 if (from >= 0 && from != to) {
                                     folder.apps.removeAt(from)
@@ -440,17 +458,30 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                 }
             }
     ) {
-        Column {
+        // Liquid Glass folder: the pages are captured so the open folder can blur them.
+        val glass = FolderStyle.mode == "glass"
+        val dark = ThemeChoice.mode == "dark" || (ThemeChoice.mode != "light" && isSystemInDarkTheme())
+        val pageBg = if (dark) Color.Black else MiuixTheme.colorScheme.background
+        val folderBackdrop = rememberLayerBackdrop {
+            drawRect(pageBg)
+            drawContent()
+        }
+        val wallpaper = rememberWallpaper()
+        Column(if (glass) Modifier.layerBackdrop(folderBackdrop) else Modifier) {
             HorizontalPager(pager, Modifier.fillMaxWidth(), pageSpacing = 12.dp,
                 userScrollEnabled = dragItem == null && dragApp == null && openFolder == null) { p ->
                 val items = state.pages.getOrNull(p) ?: return@HorizontalPager
-                val ratio = state.cols / (state.rows * 1.22f)
+                val ratio = screenRatio()
                 // As big as fits: the whole page stays visible in the sheet without scrolling.
                 BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val w = if (maxGridHeight == androidx.compose.ui.unit.Dp.Infinity) maxWidth else minOf(maxWidth, maxGridHeight * ratio)
                 BoxWithConstraints(
-                    Modifier.width(w).aspectRatio(ratio)
-                        .clip(RoundedCornerShape(20.dp)).background(MiuixTheme.colorScheme.surfaceContainerHigh).padding(6.dp)
+                    Modifier.width(w).aspectRatio(ratio).clip(RoundedCornerShape(20.dp)).launcherBackdrop(wallpaper)
+                ) {
+                    val pageH = maxHeight
+                    SearchPill(pageH)
+                BoxWithConstraints(
+                    Modifier.gridArea(pageH)
                         .onGloballyPositioned { if (p == pager.currentPage) gridRect = it.boundsInRoot().translate(-origin) }
                 ) {
                     val cw = maxWidth / state.cols
@@ -464,10 +495,11 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                                     .alpha(if (it === dragItem) 0f else 1f),
                                 contentAlignment = Alignment.TopCenter,
                             ) {
-                                EditorCell(it, highlight = it === mergeTarget && mergeReady)
+                                EditorCell(it, highlight = it === mergeTarget && mergeReady, icon = minOf(44.dp, ch * 0.6f, cw * 0.72f))
                             }
                         }
                     }
+                }
                 }
                 }
             }
@@ -485,6 +517,20 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                 f, dragApp, grow, openFrom, panelRect,
                 Modifier.align(Alignment.Center).fillMaxWidth(0.9f)
                     .onGloballyPositioned { panelRect = it.boundsInRoot().translate(-origin) },
+                fill = if (glass) {
+                    Modifier.textureBlur(
+                        backdrop = folderBackdrop,
+                        shape = RoundedCornerShape(28.dp),
+                        blurRadius = 25f,
+                        colors = BlurDefaults.blurColors(
+                            blendColors = listOf(BlendColorEntry(color = MiuixTheme.colorScheme.surfaceContainer.copy(alpha = if (dark) 0.4f else 0.6f))),
+                        ),
+                        highlight = if (dark) Highlight.GlassStrokeMiddleDark else Highlight.Default,
+                    ).clip(RoundedCornerShape(28.dp))
+                } else {
+                    Modifier.clip(RoundedCornerShape(28.dp)).background(MiuixTheme.colorScheme.surfaceContainer)
+                },
+                cols = state.folderCols, rows = state.folderRows, page = folderPage, onPage = { folderPage = it },
                 onGrid = { panelGridRect = it.translate(-origin) },
                 onTitle = { titleRect = it.translate(-origin) },
                 onRename = { t -> f.title = t; state.dirty = true },
@@ -511,7 +557,7 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
                 Modifier.offset { IntOffset((pointer.x - half).toInt(), (pointer.y - lift - half).toInt()) }
                     .size(60.dp).graphicsLayer { scaleX = 1.12f; scaleY = 1.12f; alpha = 0.95f },
             ) {
-                if (floatingFolder != null) FolderIcon(floatingFolder, Modifier.size(52.dp))
+                if (floatingFolder != null) FolderIcon(floatingFolder, 52.dp)
                 else AppIcon(floating!!.pkg, Modifier.size(52.dp))
             }
         }
@@ -520,7 +566,7 @@ fun LayoutEditor(state: EditorState, modifier: Modifier = Modifier, maxGridHeigh
 
 /** One UI style page dots: tap one, or slide along them, to change page. */
 @Composable
-private fun PageDots(count: Int, current: Int, onSelect: (Int) -> Unit) {
+internal fun PageDots(count: Int, current: Int, onSelect: (Int) -> Unit) {
     val density = LocalDensity.current
     val step = with(density) { 18.dp.toPx() }
     val width = 18.dp * count
@@ -566,46 +612,36 @@ private fun PageDots(count: Int, current: Int, onSelect: (Int) -> Unit) {
 }
 
 @Composable
-private fun EditorCell(item: EItem, highlight: Boolean) {
+private fun EditorCell(item: EItem, highlight: Boolean, icon: androidx.compose.ui.unit.Dp) {
     Column(
         Modifier.fillMaxSize().padding(top = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         val scale by animateFloatAsState(if (highlight) 1.15f else 1f, label = "hover")
         Box(
-            Modifier.size(46.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+            Modifier.size(icon + 2.dp).graphicsLayer { scaleX = scale; scaleY = scale }
                 .then(if (highlight) Modifier.border(2.dp, MiuixTheme.colorScheme.primary, RoundedCornerShape(14.dp)) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
-            if (item.folder) FolderIcon(item, Modifier.size(44.dp)) else AppIcon(item.app!!.pkg, Modifier.size(44.dp))
+            if (item.folder) FolderIcon(item, icon) else AppIcon(item.app!!.pkg, Modifier.size(icon))
         }
         Text(
             item.title,
             Modifier.padding(top = 2.dp, start = 2.dp, end = 2.dp),
-            fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+            color = Color.White, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
         )
     }
 }
 
 @Composable
-private fun FolderIcon(folder: EItem, modifier: Modifier) {
-    val tint = folder.color?.let { Color(it) } ?: MiuixTheme.colorScheme.surfaceContainerHighest
-    Column(
-        modifier.clip(RoundedCornerShape(12.dp)).background(tint).padding(4.dp),
-        verticalArrangement = Arrangement.SpaceEvenly,
-    ) {
-        for (r in 0 until 2) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            for (c in 0 until 2) {
-                val a = folder.apps.getOrNull(r * 2 + c)
-                if (a != null) AppIcon(a.pkg, Modifier.size(16.dp)) else Spacer(Modifier.size(16.dp))
-            }
-        }
-    }
+private fun FolderIcon(folder: EItem, size: androidx.compose.ui.unit.Dp) {
+    LauncherFolderTile(size, folder.color, folder.apps.map { it.pkg })
 }
 
 @Composable
 private fun FolderPanel(
-    folder: EItem, dragging: EApp?, grow: Float, from: Rect, panel: Rect, modifier: Modifier,
+    folder: EItem, dragging: EApp?, grow: Float, from: Rect, panel: Rect, modifier: Modifier, fill: Modifier,
+    cols: Int, rows: Int, page: Int, onPage: (Int) -> Unit,
     onGrid: (Rect) -> Unit, onTitle: (Rect) -> Unit, onRename: (String) -> Unit, onUngroup: () -> Unit,
 ) {
     // Grow out of the folder icon's position.
@@ -620,7 +656,7 @@ private fun FolderPanel(
                 scaleY = s
                 alpha = grow
             }
-            .clip(RoundedCornerShape(28.dp)).background(MiuixTheme.colorScheme.surfaceContainer)
+            .then(fill)
             .padding(horizontal = 12.dp, vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -633,26 +669,36 @@ private fun FolderPanel(
             modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
                 .onGloballyPositioned { onTitle(it.boundsInRoot()) },
         )
-        val rows = ((folder.apps.size + FOLDER_COLS - 1) / FOLDER_COLS).coerceAtLeast(1)
-        Column(Modifier.fillMaxWidth().onGloballyPositioned { onGrid(it.boundsInRoot()) }) {
-            for (r in 0 until rows) {
-                Row(Modifier.fillMaxWidth()) {
-                    for (c in 0 until FOLDER_COLS) {
-                        val a = folder.apps.getOrNull(r * FOLDER_COLS + c)
-                        Column(
-                            Modifier.weight(1f).height(82.dp).alpha(if (a != null && a === dragging) 0f else 1f),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            if (a != null) {
-                                AppIcon(a.pkg, Modifier.padding(top = 4.dp).size(48.dp))
-                                Text(a.label, Modifier.padding(top = 4.dp, start = 2.dp, end = 2.dp), fontSize = 11.sp,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+        val cap = cols * rows
+        val pages = folderPages(folder.apps.size, cap)
+        // Swipes like the home pages; the editor's drags read the page from onPage.
+        val fp = rememberPagerState(initialPage = page.coerceIn(0, pages - 1)) { pages }
+        val scope = rememberCoroutineScope()
+        LaunchedEffect(fp.currentPage) { onPage(fp.currentPage) }
+        LaunchedEffect(page) { if (page in 0 until pages && fp.currentPage != page) fp.animateScrollToPage(page) }
+        HorizontalPager(fp, Modifier.fillMaxWidth().onGloballyPositioned { onGrid(it.boundsInRoot()) }, pageSpacing = 12.dp,
+            userScrollEnabled = dragging == null) { pg ->
+            Column(Modifier.fillMaxWidth()) {
+                for (r in 0 until rows) {
+                    Row(Modifier.fillMaxWidth()) {
+                        for (c in 0 until cols) {
+                            val a = folder.apps.getOrNull(pg * cap + r * cols + c)
+                            Column(
+                                Modifier.weight(1f).height(82.dp).alpha(if (a != null && a === dragging) 0f else 1f),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                if (a != null) {
+                                    AppIcon(a.pkg, Modifier.padding(top = 4.dp).size(48.dp))
+                                    Text(a.label, Modifier.padding(top = 4.dp, start = 2.dp, end = 2.dp), fontSize = 11.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        if (pages > 1) PageDots(pages, fp.currentPage) { i -> scope.launch { fp.animateScrollToPage(i) } }
         Text(
             "폴더 풀기",
             Modifier.padding(top = 10.dp).clip(RoundedCornerShape(50)).clickable(onClick = onUngroup)

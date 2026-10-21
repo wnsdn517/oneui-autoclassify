@@ -62,6 +62,8 @@ final class Planner {
         boolean aiMode;
         /** Folder titles in the order the AI wants them (AI mode); empty = no opinion. */
         final List<String> folderOrder = new ArrayList<>();
+        /** AI mode: pkg -> page inside its folder (1-based); the app goes to that page of the folder it is in. */
+        final Map<String, String[]> inFolderPage = new HashMap<>();
         /** Config.UNCLASSIFIED_* and its folder name / page. */
         String unclassified = com.auto.classify.core.Config.UNCLASSIFIED_KEEP;
         String unclassifiedFolder = "기타";
@@ -177,6 +179,8 @@ final class Planner {
     private int rows = 6;
     /** Live {cols, rows} of the apps screen; read on every load so grid changes are picked up. */
     private java.util.function.Supplier<int[]> gridSource;
+    /** Live {cols, rows} of a folder as the launcher opens it; sent to the editor, null = unknown. */
+    private java.util.function.Supplier<int[]> folderGridSource;
 
     // Model loaded by load()
     private int applistId = -1;
@@ -201,6 +205,10 @@ final class Planner {
 
     void setGridSource(java.util.function.Supplier<int[]> source) {
         this.gridSource = source;
+    }
+
+    void setFolderGridSource(java.util.function.Supplier<int[]> source) {
+        this.folderGridSource = source;
     }
 
     /**
@@ -570,6 +578,19 @@ final class Planner {
             }
         }
 
+        // Loose apps the AI put on a given page ("(폴더밖)|page"): pinned like a rule's page.
+        for (Row[] a : apps) {
+            if (a[0].pkg == null) continue;
+            String[] want = t.inFolderPage.get(a[0].pkg);
+            if (want == null || !LOOSE.equals(want[0])) continue;
+            try {
+                int page = Integer.parseInt(want[1]);
+                if (page > 0) plan.loosePins.put(a[0].pkg, page);
+            } catch (NumberFormatException e) {
+                // not a page number; leave the app where it is
+            }
+        }
+
         // Folders that exist after this plan.
         java.util.Set<String> live = new java.util.HashSet<>();
         for (Map.Entry<String, List<Move>> e : wanted.entrySet()) {
@@ -819,6 +840,28 @@ final class Planner {
             }
         }
 
+        // AI asked for a page inside a folder: move the app to where that page starts.
+        // Runs after the sort above so the sort does not undo it.
+        int[] fgrid = folderGridSource == null ? null : folderGridSource.get();
+        int folderCap = fgrid == null ? 12 : Math.max(1, fgrid[0] * fgrid[1]);
+        for (Row f : folders.values()) {
+            List<Row> kids = children.get(f.id);
+            if (kids == null) continue;
+            for (Row app : new ArrayList<>(kids)) {
+                String[] want = t.inFolderPage.get(app.pkg); // {folder, page}
+                if (want == null || !want[0].equals(f.title)) continue;
+                int page;
+                try {
+                    page = Integer.parseInt(want[1]);
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+                if (page < 1) continue;
+                kids.remove(app);
+                kids.add(Math.min(kids.size(), (page - 1) * folderCap), app);
+            }
+        }
+
         List<Row> flat = new ArrayList<>();
         for (int page : pages) flat.addAll(top.get(page));
         List<Row> fs = new ArrayList<>(), as = new ArrayList<>();
@@ -983,7 +1026,10 @@ final class Planner {
             }
             ps.put(items);
         }
-        return new JSONObject().put("cols", cols).put("rows", rows).put("pages", ps);
+        JSONObject out = new JSONObject().put("cols", cols).put("rows", rows).put("pages", ps);
+        int[] fg = folderGridSource == null ? null : folderGridSource.get();
+        if (fg != null) out.put("folderCols", fg[0]).put("folderRows", fg[1]);
+        return out;
     }
 
     // ---- write ----------------------------------------------------------------------------

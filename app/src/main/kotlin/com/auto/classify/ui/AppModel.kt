@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.auto.classify.core.Classifier
 import com.auto.classify.core.Config
+import com.auto.classify.core.Directives
 import com.auto.classify.core.ModuleStatus
 import com.auto.classify.core.Prefs
 import java.text.SimpleDateFormat
@@ -38,6 +39,29 @@ class AppModel(private val context: Context) {
 
     init {
         splitRulesByMode()
+        migrateRulesMode()
+        syncIconShape()
+    }
+
+    /**
+     * The "규칙만" mode is gone: its live rules stay as the category rules, so the mode becomes category.
+     */
+    private fun migrateRulesMode() {
+        if (prefs.getBoolean(RULES_MODE_REMOVED, false)) return
+        normalizeRulesMode()
+        prefs.edit().putBoolean(RULES_MODE_REMOVED, true).commit()
+    }
+
+    /** Also run after a settings import, which can bring back a saved "rules" mode. */
+    private fun normalizeRulesMode() {
+        prefs.edit().apply {
+            if (prefs.getString(Config.KEY_MODE, Config.MODE_CATEGORY) == "rules") putString(Config.KEY_MODE, Config.MODE_CATEGORY)
+            remove(RULES_PREFIX + "rules")
+        }.commit()
+    }
+
+    private fun syncIconShape() {
+        IconShape.mode = Directives.parse(prefs.getString(Config.KEY_RULES, Config.DEFAULT_RULES)).iconShape
     }
 
     // ---- rules per mode ------------------------------------------------------------------------
@@ -77,7 +101,7 @@ class AppModel(private val context: Context) {
         edit({
             putString(Config.KEY_RULES, text.trim())
             if (removed.isNotEmpty()) {
-                for (m in listOf(Config.MODE_CATEGORY, Config.MODE_COLOR, Config.MODE_AI, Config.MODE_RULES)) {
+                for (m in listOf(Config.MODE_CATEGORY, Config.MODE_COLOR, Config.MODE_AI)) {
                     val stored = prefs.getString(RULES_PREFIX + m, null) ?: continue
                     putString(RULES_PREFIX + m, stored.lines().filterNot { it.trim() in removed }.joinToString("\n"))
                 }
@@ -119,7 +143,6 @@ class AppModel(private val context: Context) {
             Config.MODE_CATEGORY to pins + category,
             Config.MODE_COLOR to pins + color,
             Config.MODE_AI to pins,
-            Config.MODE_RULES to pins + category,
         )
         val active = prefs.getString(Config.KEY_MODE, Config.MODE_CATEGORY)!!
         prefs.edit().apply {
@@ -238,8 +261,9 @@ class AppModel(private val context: Context) {
                     diagnosis = Diagnosis.from(payload, disabledFeatures())
                 }
                 Config.ACTION_LAYOUT -> {
-                    folders = folderTitles(payload)
-                    lastLayout = runCatching { JSONObject(payload) }.getOrNull()
+                    val layout = runCatching { JSONObject(payload) }.getOrNull()
+                    folders = folderTitles(layout)
+                    lastLayout = layout
                     layoutLatch?.countDown()
                 }
                 Config.ACTION_LOGS -> {
@@ -324,7 +348,8 @@ class AppModel(private val context: Context) {
             requestHealth()
         }
         pendingTimeout = timeout
-        main.postDelayed(timeout, 6000)
+        // A preview reads and classifies every app on the home screen, so it gets longer than other commands.
+        main.postDelayed(timeout, if (cmd == "plan") 15000L else 6000L)
         send(cmd, arg)
     }
 
@@ -368,6 +393,7 @@ class AppModel(private val context: Context) {
 
     fun edit(block: SharedPreferences.Editor.() -> Unit, reload: Boolean = true) {
         prefs.edit().apply(block).apply()
+        syncIconShape()
         settingsVersion++
         if (reload) send("reload")
     }
@@ -427,6 +453,10 @@ class AppModel(private val context: Context) {
         private set
     /** Text typed in the preview's AI box but not sent yet; Apply asks once before ignoring it. */
     var aiDraft by mutableStateOf("")
+    /** Unsent "AI로 규칙 만들기" input; kept when the sheet closes so it isn't lost. */
+    var ruleDraft by mutableStateOf("")
+    /** Rule editor opened from anywhere (index < 0 = new); rendered by the rules tab. */
+    var ruleEditor by mutableStateOf<Pair<Int, RuleItem>?>(null)
     var aiAnswer by mutableStateOf<String?>(null)
         private set
 
@@ -475,8 +505,9 @@ class AppModel(private val context: Context) {
     }
 
     /**
-     * A follow-up request on the current AI organization; it is also added to the instruction
-     * so new installs follow it too.
+     * A follow-up request on the current AI organization. Only the first request (the instruction)
+     * and this follow-up are sent; earlier follow-ups stay in AiHistory, readable by the AI's
+     * past_requests tool.
      */
     fun aiRefine(request: String) {
         val llm = aiLlm() ?: run {
@@ -487,7 +518,6 @@ class AppModel(private val context: Context) {
         val assign = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_MAP, ""))
         val pages = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_PAGES, ""))
             .mapNotNull { (k, v) -> v.toIntOrNull()?.let { k to it } }.toMap()
-        appendOnSuccess = request.trim()
         runAi(request) {
             com.auto.classify.ai.AiOrganizer.refine(context, llm, instruction, assign, pages, savedOrder(), request,
                 prefs.getInt(Config.KEY_MIN_APPS, 2), progress())
@@ -622,11 +652,15 @@ class AppModel(private val context: Context) {
         }
         val aiColors = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_COLORS, ""))
             .mapKeys { (f, _) -> names[f] ?: f }
+        // App pages hold "folder|page": only the folder part is renamed.
+        val aiAppPages = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_APP_PAGES, ""))
+            .mapValues { (_, v) -> v.substringBeforeLast('|', "").let { f -> if (f.isEmpty()) v else (names[f] ?: f) + v.substring(f.length) } }
         val order = JSONArray(savedOrder().map { names[it] ?: it })
         edit({
             putString(Config.KEY_AI_ORDER, order.toString())
             putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(ai))
             putString(Config.KEY_AI_PAGES, JSONObject(aiPages as Map<*, *>).toString())
+            putString(Config.KEY_AI_APP_PAGES, com.auto.classify.ai.AiOrganizer.save(aiAppPages))
             putString(Config.KEY_AI_COLORS, JSONObject(aiColors as Map<*, *>).toString())
             putString(Config.KEY_RULES, rules)
             putString(Config.KEY_FOLDER_NAMES, renames.entries.joinToString("\n") { "${it.key}=${it.value}" })
@@ -733,13 +767,12 @@ class AppModel(private val context: Context) {
     /** Restores settings from a backup file's text, then tells the launcher to reload them. */
     fun importSettings(json: String): Int {
         val n = SettingsBackup.import(context, json)
+        normalizeRulesMode()
         edit({})
         requestHealth()
         return n
     }
 
-    /** A follow-up request joins the instruction only once the AI has handled it. */
-    private var appendOnSuccess: String? = null
 
     /** The user's AI service; retries show up as the current stage. */
     /** The service of the current request, for what it reports afterwards (search fallback). */
@@ -753,10 +786,10 @@ class AppModel(private val context: Context) {
         toolsUsed.clear()
         if (prefs.let { com.auto.classify.ai.ApiLlm.prefs(context).getBoolean(com.auto.classify.ai.ApiLlm.KEY_TOOLS, true) }) {
             llm.tools = AiTools(context, this, if (llm.web) { q -> llm.webSearch(q) } else null)
-            llm.onTool = java.util.function.Consumer { n ->
+            llm.onTool = java.util.function.BiConsumer { n, detail ->
                 main.post {
                     toolsUsed.add(AiTools.label(n))
-                    aiStage = AiTools.label(n) + " 중"
+                    aiStage = AiTools.label(n) + " 중" + if (detail.isEmpty()) "" else " · $detail"
                 }
             }
         }
@@ -785,8 +818,8 @@ class AppModel(private val context: Context) {
             text.contains("\"options\"") || text.contains("\"settings\"") -> prefix + "설정 확인 중"
             text.contains("\"loose\"") -> prefix + "폴더 밖 앱 정리 중"
             else -> {
-                val n = FOLDER_NAME.findAll(text).map { it.groupValues[1] }.distinct().count()
-                prefix + if (n == 0) "폴더 구성 시작" else "폴더 구성 중 (${n}개)"
+                val names = FOLDER_NAME.findAll(text).map { it.groupValues[1] }.distinct().toList()
+                prefix + if (names.isEmpty()) "폴더 구성 시작" else "폴더 구성 중 (${names.size}개) · ${names.last()}"
             }
         }
     }
@@ -819,13 +852,7 @@ class AppModel(private val context: Context) {
             val r = runCatching(work)
             main.post {
                 aiRunning = false
-                val append = appendOnSuccess
-                appendOnSuccess = null
                 r.onSuccess { plan ->
-                    if (append != null) {
-                        val ins = prefs.getString(Config.KEY_AI_REQUEST, "")!!
-                        edit({ putString(Config.KEY_AI_REQUEST, (ins.trim() + "\n" + append).trim()) }, reload = false)
-                    }
                     val (changed, memoChanges) = applyExtras(plan.options, plan.memoAdd, plan.memoRemove)
                     optionsNotice(changed)?.let { toast(it) }
                     // Layout settings (!폴더색 …) and folder colors apply whether or not folders change.
@@ -838,7 +865,11 @@ class AppModel(private val context: Context) {
                         return@onSuccess
                     }
                     setMode(Config.MODE_AI)
+                    // Keep earlier in-folder pages of apps still in the folder they name; add the new ones.
+                    val appPages = com.auto.classify.ai.AiOrganizer.load(prefs.getString(Config.KEY_AI_APP_PAGES, ""))
+                        .filter { (pk, v) -> plan.assign[pk]?.let { v.startsWith("$it|") } == true } + plan.appPages
                     edit({
+                        putString(Config.KEY_AI_APP_PAGES, com.auto.classify.ai.AiOrganizer.save(appPages))
                         putString(Config.KEY_AI_MAP, com.auto.classify.ai.AiOrganizer.save(plan.assign))
                         putString(Config.KEY_AI_NOTE, plan.note)
                         putString(Config.KEY_AI_PAGES, org.json.JSONObject(plan.pages as Map<*, *>).toString())
@@ -857,6 +888,7 @@ class AppModel(private val context: Context) {
         const val GRID_WARNING = "홈 화면 앱 타일 수를 감지하지 못해 4x6으로 가정했어요. 페이지가 밀리거나 의도와 다르게 배치될 수 있어요"
         const val RULES_PREFIX = "rules_"
         private const val RULES_SPLIT = "rules_split_v1"
+        private const val RULES_MODE_REMOVED = "rules_mode_removed_v1"
         val FOLDER_NAME = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"")
     }
 
@@ -879,9 +911,9 @@ class AppModel(private val context: Context) {
         return out
     }
 
-    private fun folderTitles(layoutJson: String): List<String> = runCatching {
+    private fun folderTitles(layout: JSONObject?): List<String> = runCatching {
         val out = LinkedHashSet<String>()
-        val pages = JSONObject(layoutJson).optJSONArray("pages") ?: return@runCatching emptyList<String>()
+        val pages = layout?.optJSONArray("pages") ?: return@runCatching emptyList<String>()
         for (p in 0 until pages.length()) {
             val items = pages.optJSONArray(p) ?: continue
             for (i in 0 until items.length()) {

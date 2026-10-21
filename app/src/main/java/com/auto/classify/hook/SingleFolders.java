@@ -8,6 +8,7 @@ import org.luckypray.dexkit.result.FieldData;
 import org.luckypray.dexkit.result.MethodData;
 import org.luckypray.dexkit.result.UsingFieldData;
 
+import java.io.File;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Member;
@@ -24,6 +25,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import android.content.Context;
+
+import com.auto.classify.core.Config;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -33,8 +38,8 @@ import de.robv.android.xposed.XposedHelpers;
  *
  * On every start One UI Home loads each apps-screen folder by counting its children: none deletes
  * the folder, two or more build it, exactly one turns the folder into a plain app and deletes it
- * ("final item folder in apps"). When single-app folders are wanted (AI mode, or a minimum of 1 app
- * per folder), a one-child folder takes the "build it" path:
+ * ("final item folder in apps"). Single-app folders are always kept, so a one-child folder takes the
+ * "build it" path:
  * <ul>
  * <li>paged apps screen: the count is the size() of a CopyOnWriteArrayList of the folder's rows,
  *   checked inline; while the loader runs, such a list with one row that sits in a folder reports 2.
@@ -43,6 +48,10 @@ import de.robv.android.xposed.XposedHelpers;
  *   signature; the converter is called with one child, and the builder runs instead.</li>
  * <li>folder destroy: when a folder icon finishes loading with fewer than two children, the folder
  *   is destroyed; skipped for exactly one child when the call comes from the verify step.</li>
+ * <li>moving an app out of a folder into another one (the path the module itself uses): the launcher
+ *   dissolves the source folder when its child count is at most a constant (2), i.e. when it would be
+ *   left with one app. The constant is a final int of the apps view model that only that comparison
+ *   reads; it is set to 1 right after the view model is built.</li>
  * </ul>
  *
  * The launcher's classes are found by DexKit fingerprints, not by obfuscated names: a string the
@@ -69,6 +78,31 @@ public final class SingleFolders {
     }
 
     /**
+     * The module's class loader looks for libdexkit.so inside the module APK, but the installed copy is
+     * extracted to lib/<abi>/ (useLegacyPackaging). Load it from the module's nativeLibraryDir, which
+     * PackageManager reports for the module package.
+     */
+    private static void loadDexKit() {
+        try {
+            // The launcher's Application is not created yet at this point; the system context still has a PackageManager.
+            Object thread = Class.forName("android.app.ActivityThread")
+                    .getMethod("currentActivityThread").invoke(null);
+            Context ctx = (Context) thread.getClass().getMethod("getSystemContext").invoke(thread);
+            String dir = ctx.getPackageManager()
+                    .getApplicationInfo(Config.MODULE_PKG, 0).nativeLibraryDir;
+            File so = new File(dir, "libdexkit.so");
+            if (so.isFile()) {
+                System.load(so.getPath());
+                return;
+            }
+            Diag.log("libdexkit.so 없음: " + dir);
+        } catch (Throwable t) {
+            Diag.log("libdexkit 경로 확인 실패: " + t);
+        }
+        System.loadLibrary("dexkit");
+    }
+
+    /**
      * @param apkPath the launcher's APK (ApplicationInfo.sourceDir), searched by DexKit
      * @return problems found (empty when all three parts are covered)
      */
@@ -77,7 +111,7 @@ public final class SingleFolders {
         DexKitBridge bridge = null;
         try {
             // DexKit's JNI code is not loaded by its own Java class here; without this every query fails.
-            System.loadLibrary("dexkit");
+            loadDexKit();
             bridge = DexKitBridge.create(apkPath);
             String p = paged(bridge, cl);
             if (p != null) problems.add("페이지형: " + p);
@@ -85,6 +119,8 @@ public final class SingleFolders {
             if (v != null) problems.add("목록형: " + v);
             String f = folderView(bridge, cl);
             if (f != null) problems.add("폴더 표시: " + f);
+            String o = moveOut(bridge, cl);
+            if (o != null) problems.add("폴더 사이 이동: " + o);
         } catch (Throwable t) {
             problems.add("DexKit 실패: " + t);
         } finally {
@@ -270,6 +306,53 @@ public final class SingleFolders {
         } catch (Throwable t) {
             return "연결 실패: " + t;
         }
+    }
+
+    /**
+     * The folder-dissolve threshold: the int field of the apps view model that the method logging
+     * "processAddFolderItemInFolder - removeFolder" compares the source folder's child count with.
+     */
+    private static String moveOut(DexKitBridge bridge, ClassLoader cl) {
+        final String viewModel = "com.honeyspace.ui.honeypots.applist.viewmodel.ApplistViewModel";
+        Class<?> vm = XposedHelpers.findClassIfExists(viewModel, cl);
+        if (vm == null) return "앱스 화면 뷰모델을 찾지 못함";
+        List<MethodData> users = find(bridge, matcher()
+                .addUsingString("processAddFolderItemInFolder - removeFolder", StringMatchType.StartsWith, false));
+        if (users.isEmpty()) return "폴더 해체 검사 메서드 없음";
+        Set<String> names = new HashSet<>();
+        for (MethodData m : users) {
+            for (UsingFieldData used : m.getUsingFields()) {
+                FieldData f = used.getField();
+                if ("int".equals(f.getTypeName()) && viewModel.equals(f.getDeclaredClassName())) names.add(f.getFieldName());
+            }
+        }
+        List<Field> candidates = new ArrayList<>();
+        for (String name : names) {
+            try {
+                Field f = vm.getDeclaredField(name);
+                if (!Modifier.isStatic(f.getModifiers()) && Modifier.isFinal(f.getModifiers())) candidates.add(f);
+            } catch (NoSuchFieldException ignored) {
+            }
+        }
+        if (candidates.size() != 1) return "임계값 필드 " + candidates.size() + "개 (1개여야 함)";
+        final Field threshold = candidates.get(0);
+        threshold.setAccessible(true);
+        XposedBridge.hookAllConstructors(vm, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (!enabled) return;
+                try {
+                    // Only the launcher's own value (2) is replaced; anything else means this build differs.
+                    if (threshold.getInt(param.thisObject) != 2) return;
+                    threshold.setInt(param.thisObject, 1);
+                    hit("폴더 사이 이동 시 1개 남아도 유지");
+                } catch (Throwable t) {
+                    fail("폴더 사이 이동", t);
+                }
+            }
+        });
+        Diag.log("단일 앱 폴더: 폴더 사이 이동 " + viewModel + "." + threshold.getName() + " 연결 (메서드 " + users.size() + "개)");
+        return null;
     }
 
     private static MethodMatcher matcher() {

@@ -30,6 +30,12 @@ final class Backup {
 
     private final Context context;
     private final File root;
+    private int keep = KEEP;
+
+    /** How many snapshots to keep; oldest pruned on snapshot. */
+    void setKeep(int keep) {
+        this.keep = Math.max(1, keep);
+    }
 
     Backup(Context context) {
         this.context = context;
@@ -132,9 +138,19 @@ final class Backup {
         Process.killProcess(Process.myPid());
     }
 
+    /** Deletes one snapshot; false when it doesn't exist or the name is unsafe. */
+    boolean delete(String name) {
+        if (name == null || name.isEmpty() || name.contains("..") || name.contains("/") || name.contains(File.separator))
+            return false;
+        File dir = new File(root, name);
+        if (!dir.isDirectory()) return false;
+        deleteTree(dir);
+        return true;
+    }
+
     private void prune() {
         String[] names = list();
-        for (int i = 0; i < names.length - KEEP; i++) deleteTree(new File(root, names[i]));
+        for (int i = 0; i < names.length - keep; i++) deleteTree(new File(root, names[i]));
     }
 
     private static void deleteTree(File f) {
